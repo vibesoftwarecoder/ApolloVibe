@@ -4,6 +4,7 @@
 include_guard(GLOBAL)
 
 set(BOOST_MIN_VERSION "1.89.0")
+set(BOOST_VERSION "1.89.0")
 set(BOOST_FETCH_VERSION "1.89.0")
 set(BOOST_COMPONENTS
         filesystem
