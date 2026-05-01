@@ -3,7 +3,9 @@
 #
 include_guard(GLOBAL)
 
+set(BOOST_MIN_VERSION "1.89.0")
 set(BOOST_VERSION "1.89.0")
+set(BOOST_FETCH_VERSION "1.89.0")
 set(BOOST_COMPONENTS
         filesystem
         locale
@@ -30,9 +32,9 @@ endif()
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
     cmake_policy(SET CMP0167 NEW)  # Get BoostConfig.cmake from upstream
 endif()
-find_package(Boost CONFIG ${BOOST_VERSION} EXACT COMPONENTS ${BOOST_COMPONENTS})
+find_package(Boost CONFIG ${BOOST_MIN_VERSION} COMPONENTS ${BOOST_COMPONENTS})
 if(NOT Boost_FOUND)
-    message(STATUS "Boost v${BOOST_VERSION} package not found in the system. Falling back to FetchContent.")
+    message(STATUS "Boost v${BOOST_MIN_VERSION}+ package not found in the system. Falling back to FetchContent.")
     include(FetchContent)
 
     if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
