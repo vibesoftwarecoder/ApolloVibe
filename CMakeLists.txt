@@ -4,9 +4,9 @@ cmake_minimum_required(VERSION 3.20)
 # `cmake_path(CONVERT ... TO_NATIVE_PATH_LIST ...)` requires 3.20
 # todo - set this conditionally
 
-project(Apollo VERSION 0.0.0
+project(Apollo VERSION 2026.4.30
         DESCRIPTION "Self-hosted game stream host for Artemis"
-        HOMEPAGE_URL "https://github.com/ClassicOldSong/Apollo")
+        HOMEPAGE_URL "https://github.com/vibesoftwarecoder/Apollo")
 
 set(PROJECT_LICENSE "GPL-3.0-only")
 
