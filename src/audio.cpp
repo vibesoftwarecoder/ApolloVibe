@@ -26,6 +26,7 @@ namespace audio {
   using opus_t = util::safe_ptr<OpusMSEncoder, opus_multistream_encoder_destroy>;
   using sample_queue_t = std::shared_ptr<safe::queue_t<std::vector<float>>>;
 
+#ifndef NDEBUG
   namespace {
     struct mic_debug_state_t {
       std::mutex mutex;
@@ -65,7 +66,10 @@ namespace audio {
       state.snapshot.state = status;
       append_mic_event(state, status);
     }
+  }  // namespace
+#endif  // NDEBUG
 
+  namespace {
     audio_ctx_ref_t &mic_redirect_audio_ctx() {
       static audio_ctx_ref_t ref;
       return ref;
@@ -357,6 +361,7 @@ namespace audio {
     return ref->control->write_mic_data(data, len, sequence_number, timestamp);
   }
 
+#ifndef NDEBUG
   mic_debug_snapshot_t get_mic_debug_snapshot() {
     auto &state = mic_debug_state();
     std::lock_guard lock(state.mutex);
@@ -560,6 +565,7 @@ namespace audio {
     state.snapshot.state = message;
     append_mic_event(state, message);
   }
+#endif  // NDEBUG
 
   int map_stream(int channels, bool quality) {
     int shift = quality ? 1 : 0;
