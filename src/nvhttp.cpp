@@ -391,9 +391,11 @@ namespace nvhttp {
 
       launch_session->host_audio = host_audio;
 
-      // Encrypted RTSP is enabled with client reported corever >= 1
+      // Encrypted RTSP is enabled with client reported corever >= 1,
+      // unless disable_rtsp_encryption is set in the config (compatibility
+      // for clients that misbehave with rtspenc:// scheme).
       auto corever = util::from_view(get_arg(args, "corever", "0"));
-      if (corever >= 1) {
+      if (corever >= 1 && !config::stream.disable_rtsp_encryption) {
         launch_session->rtsp_cipher = crypto::cipher::gcm_t {
           launch_session->gcm_key, false
         };

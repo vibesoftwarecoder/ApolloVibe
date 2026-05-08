@@ -23,7 +23,12 @@ namespace stream {
 }
 
 namespace rtsp_stream {
-  constexpr auto RTSP_SETUP_PORT = 21;
+  // Use offset 26 (port 48010 with default sunshine.port=47984) — this matches
+  // Sunshine's stock RTSP port, which some clients (notably Moonlight iOS over
+  // Tailscale) appear to treat as well-known. Offset 21 (port 48005) saw zero
+  // SYN arrivals from iOS clients while 47979/47984 worked, suggesting iOS
+  // Tailscale silently drops/doesn't route packets to non-canonical ports.
+  constexpr auto RTSP_SETUP_PORT = 26;
 
   struct launch_session_t {
     uint32_t id;
