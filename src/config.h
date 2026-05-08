@@ -177,6 +177,11 @@ namespace config {
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;
     int wan_encryption_mode;
+
+    // When true, suppress RTSP encryption even if the client advertises corever >= 1.
+    // Forces rtsp:// instead of rtspenc:// — needed for clients that don't support
+    // the encrypted RTSP variant (e.g. standard Moonlight iOS App Store build).
+    bool disable_rtsp_encryption;
   };
 
   struct nvhttp_t {
