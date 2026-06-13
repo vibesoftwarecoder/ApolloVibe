@@ -224,8 +224,13 @@ static const bool GetAddedDisplayName(const VIRTUAL_DISPLAY_ADD_OUT& addedDispla
 	if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr))
 		return 0;
 
+	// Match on BOTH adapter LUID and target id: targetInfo.id is only unique within an
+	// adapter, and a MultiSeat seat stacks ~16 RdpIdd targets whose ids can collide with
+	// SudoVDA's. Matching id alone can resolve to the wrong (RdpIdd) display.
 	auto path = std::find_if(paths.begin(), paths.end(), [&addedDisplay](DISPLAYCONFIG_PATH_INFO _path) {
-		return _path.targetInfo.id == addedDisplay.TargetId;
+		return _path.targetInfo.id == addedDisplay.TargetId
+			&& _path.targetInfo.adapterId.HighPart == addedDisplay.AdapterLuid.HighPart
+			&& _path.targetInfo.adapterId.LowPart == addedDisplay.AdapterLuid.LowPart;
 	});
 
 	if (path == paths.end()) {
