@@ -910,7 +910,12 @@ namespace nvhttp {
     // Only include the MAC address for requests sent from paired clients over HTTPS.
     // For HTTP requests, use a placeholder MAC address that Moonlight knows to ignore.
     if constexpr (std::is_same_v<SunshineHTTPS, T>) {
-      tree.put("root.mac", platf::get_mac_address(net::addr_to_normalized_string(local_endpoint.address())));
+      // Deriving the MAC from the interface serving the request is wrong when that
+      // NIC cannot do Wake-on-LAN and a separate NIC handles wake duty, so allow it
+      // to be overridden. Empty keeps the derived behaviour.
+      tree.put("root.mac", config::nvhttp.wol_mac.empty() ?
+                             platf::get_mac_address(net::addr_to_normalized_string(local_endpoint.address())) :
+                             config::nvhttp.wol_mac);
 
       auto named_cert_p = get_verified_cert(request);
       if (!!(named_cert_p->perm & PERM::server_cmd)) {
