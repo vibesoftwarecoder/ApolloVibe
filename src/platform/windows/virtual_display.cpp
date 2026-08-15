@@ -11,6 +11,11 @@
 #include <wrl/client.h>
 #include <dxgi.h>
 #include <highlevelmonitorconfigurationapi.h>
+
+// The [SUDOVDA] diagnostics in this file are printf-to-stdout, which never reaches
+// sunshine.log — so a virtual display that fails to appear leaves no trace at all.
+// createVirtualDisplay() logs through BOOST_LOG instead; see the notes there.
+#include "src/logging.h"
 #include <physicalmonitorenumerationapi.h>
 #include <dxgi1_6.h>
 
@@ -752,14 +757,21 @@ std::wstring createVirtualDisplay(
 
 	VIRTUAL_DISPLAY_ADD_OUT output;
 	if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
-		printf("[SUDOVDA] Failed to add virtual display.\n");
+		BOOST_LOG(warning) << "SudoVDA: AddVirtualDisplay failed (GetLastError=" << GetLastError() << ")";
 		return std::wstring();
 	}
 
 	// The newly-added SudoVDA monitor may surface a little late, and on a MultiSeat
 	// seat it arrives inactive because the RDP indirect display already owns the
 	// desktop. Poll for its GDI name and, until it appears, force it into the active
-	// topology. Capped interval, ~5s budget so a genuine failure doesn't stall long.
+	// topology.
+	//
+	// Budget stays at 5s. It was raised to 15s on 2026-08-14 to test whether activation
+	// inside an RDP-loopback seat was merely slow; it is not. QueryDisplayConfig in the
+	// seat session returns 256 paths and the newly added SudoVDA target (id 256/257/258,
+	// incrementing per seat) is never among them, so activateAddedDisplay cannot act on a
+	// target the session cannot enumerate — see C:\ProgramData\MultiSeat\sudovda-activate.log.
+	// Waiting longer only stalls every seat connect, so the extra 10s was reverted.
 	uint32_t retryInterval = 20;
 	uint32_t elapsed = 0;
 	const uint32_t maxWaitMs = 5000;
@@ -769,7 +781,9 @@ std::wstring createVirtualDisplay(
 		Sleep(retryInterval);
 		elapsed += retryInterval;
 		if (elapsed >= maxWaitMs) {
-			printf("[SUDOVDA] Cannot get name for newly added virtual display!\n");
+			BOOST_LOG(warning)
+				<< "SudoVDA: display was added but never became nameable/active after "
+				<< elapsed << "ms — RDP indirect display likely still owns the topology";
 			return std::wstring();
 		}
 		if (retryInterval < 250) {
@@ -777,8 +791,17 @@ std::wstring createVirtualDisplay(
 		}
 	}
 
-	wprintf(L"[SUDOVDA] Virtual display added successfully: %ls\n", deviceName);
-	printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, fps);
+	// GDI device names are ASCII (e.g. "\\.\DISPLAY6"), so a narrowing copy is enough
+	// here and keeps this file free of a dependency on the platform string helpers.
+	std::string narrowName;
+	for (const wchar_t *p = deviceName; *p; ++p) {
+		narrowName.push_back(static_cast<char>(*p));
+	}
+
+	BOOST_LOG(info)
+		<< "SudoVDA: virtual display ready after " << elapsed << "ms — "
+		<< narrowName << " at " << width << "x" << height
+		<< " @ " << (fps / 1000.0) << "Hz";
 
 	return std::wstring(deviceName);
 }

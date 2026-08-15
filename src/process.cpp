@@ -62,19 +62,45 @@ namespace proc {
 #ifdef _WIN32
   VDISPLAY::DRIVER_STATUS vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::UNKNOWN;
 
+  const char *vDisplayStatusName(VDISPLAY::DRIVER_STATUS status) {
+    switch (status) {
+      case VDISPLAY::DRIVER_STATUS::OK:                   return "OK";
+      case VDISPLAY::DRIVER_STATUS::UNKNOWN:              return "UNKNOWN";
+      case VDISPLAY::DRIVER_STATUS::FAILED:               return "FAILED";
+      case VDISPLAY::DRIVER_STATUS::VERSION_INCOMPATIBLE: return "VERSION_INCOMPATIBLE";
+      case VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED:      return "WATCHDOG_FAILED";
+    }
+    return "UNRECOGNISED";
+  }
+
   void onVDisplayWatchdogFailed() {
+    BOOST_LOG(warning) << "SudoVDA: watchdog failed, closing the virtual display device"sv;
     vDisplayDriverStatus = VDISPLAY::DRIVER_STATUS::WATCHDOG_FAILED;
     VDISPLAY::closeVDisplayDevice();
   }
 
   void initVDisplayDriver() {
+    // This used to fail silently, which made "no virtual display was created" impossible to
+    // diagnose: the caller only checks the status enum, and nothing recorded why it was not OK.
+    // That matters most inside an RDP session, where the driver's session-scoped IPC can fail
+    // while everything else looks healthy.
     vDisplayDriverStatus = VDISPLAY::openVDisplayDevice();
-    if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-      if (!VDISPLAY::startPingThread(onVDisplayWatchdogFailed)) {
-        onVDisplayWatchdogFailed();
-        return;
-      }
+
+    if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+      BOOST_LOG(warning)
+        << "SudoVDA: openVDisplayDevice() returned "sv << vDisplayStatusName(vDisplayDriverStatus)
+        << " (GetLastError="sv << GetLastError()
+        << ") — virtual displays cannot be created in this session"sv;
+      return;
     }
+
+    if (!VDISPLAY::startPingThread(onVDisplayWatchdogFailed)) {
+      BOOST_LOG(warning) << "SudoVDA: device opened but the ping thread failed to start"sv;
+      onVDisplayWatchdogFailed();
+      return;
+    }
+
+    BOOST_LOG(info) << "SudoVDA: driver ready, virtual displays available"sv;
   }
 #endif
 
@@ -240,9 +266,25 @@ namespace proc {
       || _app.virtual_display            // App is configured to use virtual display
       || !video::allow_encoder_probing() // No active display presents
     ) {
+      BOOST_LOG(info)
+        << "Virtual display requested (headless_mode="sv << config::video.headless_mode
+        << ", session="sv << launch_session->virtual_display
+        << ", app="sv << _app.virtual_display
+        << ", no_active_display="sv << !video::allow_encoder_probing()
+        << "); SudoVDA status is "sv << vDisplayStatusName(vDisplayDriverStatus);
+
       if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
         // Try init driver again
         initVDisplayDriver();
+      }
+
+      if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+        // Previously this fell through silently, so a seat would stream the wrong surface
+        // with nothing in the log to say why. Say so plainly instead.
+        BOOST_LOG(warning)
+          << "Virtual display was requested but the SudoVDA driver is "sv
+          << vDisplayStatusName(vDisplayDriverStatus)
+          << " — falling back to capturing the existing display"sv;
       }
 
       if (vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
