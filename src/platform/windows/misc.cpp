@@ -248,6 +248,15 @@ namespace platf {
     return local_ip;
   }
 
+  /**
+   * @brief The input desktop handle this thread currently owns, or nullptr.
+   * @details SetThreadDesktop does not take ownership, so the handle must outlive the
+   *          assignment. This tracks the one we opened so it can be released on the *next*
+   *          sync rather than immediately - closing it while the thread is still assigned to
+   *          it is undefined, and the freed handle value can be recycled by the OS.
+   */
+  static thread_local HDESK _ownedInputDesktop = nullptr;
+
   HDESK syncThreadDesktop() {
     auto hDesk = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, FALSE, GENERIC_ALL);
     if (!hDesk) {
@@ -260,9 +269,21 @@ namespace platf {
     if (!SetThreadDesktop(hDesk)) {
       auto err = GetLastError();
       BOOST_LOG(error) << "Failed to sync desktop to thread [0x"sv << util::hex(err).to_string_view() << ']';
+
+      // The assignment failed, so this handle is ours to release and the thread keeps whatever
+      // desktop it had. Returning it would hand callers a handle to a desktop they are not on.
+      CloseDesktop(hDesk);
+      return nullptr;
     }
 
-    CloseDesktop(hDesk);
+    // Assignment succeeded: hDesk is now in use by this thread. Release the previous one, which
+    // nothing is assigned to any more. This used to CloseDesktop(hDesk) immediately and then
+    // return that dead handle, so callers compared - and stored - a handle Windows was free to
+    // reuse for something else.
+    if (_ownedInputDesktop) {
+      CloseDesktop(_ownedInputDesktop);
+    }
+    _ownedInputDesktop = hDesk;
 
     return hDesk;
   }
