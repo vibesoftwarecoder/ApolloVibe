@@ -13,6 +13,7 @@
 > | what is wrong | where it goes |
 > |---|---|
 > | Streaming, encoding, capture, host audio or input in ApolloVibe | **here** |
+> | The client: seat discovery, gamepad, microphone passthrough | [MoonlightVibe](https://github.com/vibesoftwarecoder/MoonlightVibe/issues) |
 > | A seat will not provision, or a seat streams the wrong desktop | [MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat/issues) |
 > | It also happens on stock Apollo | [ClassicOldSong/Apollo](https://github.com/ClassicOldSong/Apollo/issues) |
 >
