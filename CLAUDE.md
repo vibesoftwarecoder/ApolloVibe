@@ -24,15 +24,51 @@ merging it again re-applies changes that are in the tree.
 (Chase Payne) writes `libvirtualdisplay` and Vibeshine. Conflating them has produced wrong
 conclusions before.
 
+⛔ **`origin/master` cannot be fast-forwarded.** It carries **13 of our own commits** (the ApolloVibe
+rebrand, version/update URLs, mic lineage, AMD/BOOST fixes). A fast-forward would destroy them.
+**Check `git rev-list --left-right --count` in BOTH directions before any merge advice.**
+
+⛔ **Do not merge `logabell/master` either — it is 14 commits BEHIND ClassicOldSong**, so it drags
+the tree backwards. `logabell/feature/microphone-passthrough` is 785 behind: stale, ignore it.
+
+⚠️ **`C:\Users\roelb\Apollo-master` is NOT a git repo** — an unpacked source tree that looks like a
+clone. The working repo is `Apollo-Development`.
+
+Related forks under `vibesoftwarecoder`: `moonlight-common-c`, `moonlight-common-c-mic`; and
+`MoonlightVibe-Development` tracks `logabell/moonlight-qt-mic`.
+
 ## Build and package
 
-Both scripts are **tracked** (`72618f92`), but `build_apollovibe.bat` contains an absolute path for
-this machine — check it before assuming it runs elsewhere.
+**Requires MSYS2** — the batch files run `ninja` through MSYS bash. Default `C:\msys64`,
+overridable with `MSYS2_ROOT`. All four scripts are tracked (`72618f92`) and derive the repo root
+from `%~dp0`, so they are portable.
 
 ```bat
-build_apollovibe.bat            :: ninja -j4 sunshine  ->  build/sunshine.exe
+build_apollovibe.bat            :: ninja -j4 sunshine  ->  build/sunshine.exe   (~187s)
+build_apollovibe_rebase.bat     :: cmake configure + build, for after a rebase
 package_apollovibe.bat <ver>    :: stages build/{sunshine.exe,assets,tools} into the release zip
 ```
+
+Build output is gitignored (`38d1f013`): the zip, `_repackage/`, `build_apollovibe.log`.
+
+⚠️ **These scripts once hardcoded `C:\Users\roelb\...`** and would have published a username to a
+public fork. They were fixed before being committed, and reading them first is what caught it.
+**Always read build tooling before committing it to a public repo** — absolute local paths hide
+there.
+
+### Deploying a build to this host
+
+```
+stop MultiSeatService   :: tears down seats and releases the exe lock
+back up  C:\Program Files\ApolloVibe\sunshine.exe
+copy the new sunshine.exe
+start MultiSeatService
+```
+
+For a commit touching only `src/`, `sunshine.exe` is the only file that needs copying. The
+standalone `C:\Program Files\Apollo\Sunshine.exe` keeps running throughout, which is correct.
+Verify the deploy by a log line that only exists in the new build — a stale binary otherwise looks
+identical.
 
 ### ⛔ The packaging trap that broke fresh installs
 
