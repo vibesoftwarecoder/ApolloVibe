@@ -1,0 +1,121 @@
+name: Bug report
+description: Something is wrong with ApolloVibe itself — streaming, encoding, capture, audio or input.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you file:** if a MultiSeat *seat* fails to provision, or a seat goes green and
+        nothing happens, that belongs on
+        [vibesoftwarecoder/MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat/issues) instead.
+
+        If the problem also happens on stock
+        [ClassicOldSong/Apollo](https://github.com/ClassicOldSong/Apollo), report it there — we
+        track that upstream rather than fixing it twice.
+
+  - type: input
+    id: version
+    attributes:
+      label: ApolloVibe version
+      description: The web UI footer, or the `sunshine.exe` file version. Please give the exact string.
+      placeholder: v2026.6.1-multiseat.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: which-apollo
+    attributes:
+      label: Which Apollo is serving the stream?
+      description: >
+        These are separate installs and are debugged differently. Check the path of the running
+        process, do not assume.
+      options:
+        - ApolloVibe (C:\Program Files\ApolloVibe) — installed by MultiSeat
+        - Standalone Apollo (C:\Program Files\Apollo) — console install
+        - Both are installed and I am not sure which one served this
+    validations:
+      required: true
+
+  - type: dropdown
+    id: session
+    attributes:
+      label: Where was it streaming from?
+      options:
+        - A MultiSeat seat (an RDP session)
+        - The console session
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stays-alive
+    attributes:
+      label: If Apollo produced no log — did the process stay alive?
+      description: >
+        This one field decides the whole diagnosis, so please check it rather than guessing.
+        Watch `sunshine.exe` in Task Manager. **Exits after roughly ten seconds** means it failed
+        while reading its config, before logging ever started. **Keeps running** means it is
+        serving but cannot write its log file. The two have nothing to do with each other.
+      options:
+        - Not applicable — I have a log
+        - It exits after about ten seconds
+        - It keeps running, but writes no log
+        - I have not checked
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: ApolloVibe log
+      description: |
+        Please attach the file rather than pasting an excerpt — the useful part is often the last
+        few lines before it stops.
+
+        **If this is an encoder problem, set the log level to `verbose` first and reproduce it
+        again.** `debug` is not enough: at any level above `verbose`, ApolloVibe discards every
+        message coming from FFmpeg, which is where the AMF, QSV and software encoders report their
+        errors. On `info` (the default) a failing encoder prints `Creating encoder [...]` and then
+        simply nothing.
+
+        Under MultiSeat, set it in `C:\Program Files\MultiSeat\appsettings.local.json`:
+        `{ "MultiSeat": { "ApolloLogLevel": "verbose" } }` — do not hand-edit a seat's
+        `sunshine.conf`, it is regenerated on every provision.
+
+        Log locations: console install `C:\Program Files\<Apollo dir>\config\sunshine.log`;
+        a seat `C:\ProgramData\MultiSeat\apollo\<seat>\apollo.log` **or**
+        `...\<seat>\logs\apollo-<timestamp>.log` — both layouts exist, so check for the folder too.
+      render: text
+
+  - type: textarea
+    id: host
+    attributes:
+      label: Host details
+      value: |
+        - Windows version (`winver`, e.g. 11 26200):
+        - GPU:
+        - GPU driver version:
+        - Encoder configured (nvenc / amdvce / qsv / software):
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Other virtual display drivers installed, unusual audio routing, and so on.

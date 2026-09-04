@@ -1,5 +1,25 @@
 # ApolloVibe
 
+> ## About this fork — ApolloVibe
+>
+> **ApolloVibe** is our fork of [Apollo](https://github.com/ClassicOldSong/Apollo) by
+> ClassicOldSong, which is itself a Sunshine fork. It is built and released here, and installed to
+> `C:\Program Files\ApolloVibe` by
+> [MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat) — deliberately separate from a
+> standalone Apollo install, so the two can coexist.
+>
+> **Where to report a problem:**
+>
+> | what is wrong | where it goes |
+> |---|---|
+> | Streaming, encoding, capture, host audio or input in ApolloVibe | **here** |
+> | A seat will not provision, or a seat streams the wrong desktop | [MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat/issues) |
+> | It also happens on stock Apollo | [ClassicOldSong/Apollo](https://github.com/ClassicOldSong/Apollo/issues) |
+>
+> A failure that looks like a MultiSeat provisioning bug is often an ApolloVibe one, so if you are
+> unsure, file it either way and we will move it.
+
+
 **ApolloVibe** is a Windows game streaming host built for [MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat) — a system that runs multiple simultaneous Moonlight streaming sessions on one machine.
 
 It is a fork of [ClassicOldSong/Apollo](https://github.com/ClassicOldSong/Apollo) with mic passthrough patches from [logabell](https://github.com/logabell/Apollo) rebased onto the latest Apollo HEAD, plus MultiSeat-specific configuration support.
