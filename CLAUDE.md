@@ -152,6 +152,26 @@ returns `DISP_CHANGE_SUCCESSFUL` and changes nothing.
 So a seat streams its RDP surface. That works, and it is not a broken stream — but it is why seats
 have no real refresh rate.
 
+## Working on this host — safety rules
+
+This machine is the reference host and runs live seats. These are not style preferences; each one
+follows a real incident.
+
+- ⛔ **The host is headless and the user is never physically at it.** Any procedure that says "watch
+  the screen" or "listen to the speakers" cannot be run. Reach it over RustDesk or through logs.
+- ⛔ **Never provision or tear down a seat while anything is streaming.** Check first, and check it
+  correctly — Moonlight's video is UDP, so established TCP connections prove nothing. Use
+  per-process GPU encode utilisation, which also names which Apollo is busy.
+- ⛔ **Reboots are the user's call.** Stage them and say so; never run `Restart-Computer`.
+- ⛔ **This fork is public.** Read anything before committing it, especially build tooling — these
+  scripts once carried `C:\Users\roelb\...` and would have published a username.
+- ⚠️ **Deploying a new `sunshine.exe` is manual, and a stale binary looks identical.** Verify with a
+  log line only the new build emits.
+- ⚠️ **Validate an instrument before trusting what it says.** A probe that returns the same answer
+  no matter what you change is broken, not informative — run it where you *know* the answer first.
+
+Fuller versions of these, and the incidents behind them, are in this project's memory.
+
 ## Testing changes against MultiSeat
 
 MultiSeat is the main consumer, so a change here is not proven until a seat uses it:
