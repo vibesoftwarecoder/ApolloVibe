@@ -10,7 +10,7 @@ C++ / CMake / Ninja, MSVC on Windows. The web UI is Vite.
 
 | remote | url | what it is |
 |---|---|---|
-| `origin` | `vibesoftwarecoder/Apollo` | **ours** — releases are published here |
+| `origin` | `vibesoftwarecoder/ApolloVibe` | **ours** — releases are published here |
 | `upstream` | `ClassicOldSong/Apollo` | Apollo proper, by ClassicOldSong |
 | `logabell` | `logabell/Apollo` | the microphone-passthrough fork |
 
@@ -40,9 +40,6 @@ with how far behind you let it drift.
 
 ⛔ **Do not merge `logabell/master` either — it is 14 commits BEHIND ClassicOldSong**, so it drags
 the tree backwards. `logabell/feature/microphone-passthrough` is 785 behind: stale, ignore it.
-
-⚠️ **`%USERPROFILE%\Apollo-master` is NOT a git repo** — an unpacked source tree that looks like a
-clone. The working repo is `Apollo-Development`.
 
 Related forks under `vibesoftwarecoder`: `moonlight-common-c`, `moonlight-common-c-mic`; and
 `MoonlightVibe-Development` tracks `logabell/moonlight-qt-mic`.
