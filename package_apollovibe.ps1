@@ -27,7 +27,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $root  = $PSScriptRoot
 $build = Join-Path $root 'build'
-$out   = Join-Path $root "apollovibe-v$Version-windows-x64.zip"
+# Deliberately version-free. MultiSeat's installer fetches this through
+# https://github.com/vibesoftwarecoder/ApolloVibe/releases/latest/download/apollovibe-windows-x64.zip
+# which only resolves if the asset name is stable across releases. Putting the
+# version back in means editing install-prerequisites.ps1 on every release, and
+# that coupling is why users sat on the June build until 2026-09-05.
+# $Version is still used for the release tag and the notes.
+$out   = Join-Path $root "apollovibe-windows-x64.zip"
 $stage = Join-Path $root '_repackage\stage'
 
 function Fail($msg) {
@@ -81,5 +87,5 @@ if (-not $hasApps) {
 }
 
 $mb = [math]::Round((Get-Item $out).Length / 1MB, 1)
-Write-Host "OK: apollovibe-v$Version-windows-x64.zip - $count entries, $mb MB" -ForegroundColor Green
+Write-Host "OK: apollovibe-windows-x64.zip (v$Version) - $count entries, $mb MB" -ForegroundColor Green
 Write-Host "    $out"
