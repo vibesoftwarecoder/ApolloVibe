@@ -155,6 +155,7 @@ namespace audio {
   int init_mic_redirect_device();
   void release_mic_redirect_device();
   int write_mic_data(const char *data, std::size_t len, std::uint16_t sequence_number, std::uint32_t timestamp);
+#ifndef NDEBUG
   mic_debug_snapshot_t get_mic_debug_snapshot();
   void mic_debug_on_session_start(const std::string &client_name, bool encryption_enabled);
   void mic_debug_on_session_stop(const std::string &reason = {});
@@ -175,4 +176,23 @@ namespace audio {
   void mic_debug_on_packet_rendered(std::uint16_t sequence_number, double normalized_level, bool silent);
   void mic_debug_on_decode_error(std::uint16_t sequence_number, const std::string &message);
   void mic_debug_on_render_error(std::uint16_t sequence_number, const std::string &message);
+#else
+  inline mic_debug_snapshot_t get_mic_debug_snapshot() { return {}; }
+  inline void mic_debug_on_session_start(const std::string &, bool) {}
+  inline void mic_debug_on_session_stop(const std::string & = {}) {}
+  inline void mic_debug_on_backend_initialized(const std::string &) {}
+  inline void mic_debug_on_backend_target(const std::string &, int, std::uint32_t) {}
+  inline void mic_debug_on_backend_format(const std::string &, const std::string &, bool, const std::string &) {}
+  inline void mic_debug_on_backend_endpoint_formats(const std::string &, const std::string &,
+                                                    const std::string &, const std::string &,
+                                                    bool, bool) {}
+  inline void mic_debug_on_backend_error(const std::string &) {}
+  inline void mic_debug_on_packet_received(std::uint16_t, std::size_t) {}
+  inline void mic_debug_on_packet_decrypt_error(std::uint16_t, const std::string &) {}
+  inline void mic_debug_on_packet_dropped(std::uint16_t, const std::string &) {}
+  inline void mic_debug_on_packet_decoded(std::uint16_t, double, bool) {}
+  inline void mic_debug_on_packet_rendered(std::uint16_t, double, bool) {}
+  inline void mic_debug_on_decode_error(std::uint16_t, const std::string &) {}
+  inline void mic_debug_on_render_error(std::uint16_t, const std::string &) {}
+#endif  // NDEBUG
 }  // namespace audio

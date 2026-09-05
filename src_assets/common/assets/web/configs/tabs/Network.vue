@@ -123,6 +123,13 @@ const effectivePort = computed(() => +config.value?.port ?? defaultMoonlightPort
       <div class="form-text">{{ $t('config.external_ip_desc') }}</div>
     </div>
 
+    <!-- Wake-on-LAN MAC override -->
+    <div class="mb-3">
+      <label for="wol_mac" class="form-label">{{ $t('config.wol_mac') }}</label>
+      <input type="text" class="form-control" id="wol_mac" placeholder="AA:BB:CC:DD:EE:FF" v-model="config.wol_mac" />
+      <div class="form-text">{{ $t('config.wol_mac_desc') }}</div>
+    </div>
+
     <!-- LAN Encryption Mode -->
     <div class="mb-3">
       <label for="lan_encryption_mode" class="form-label">{{ $t('config.lan_encryption_mode') }}</label>

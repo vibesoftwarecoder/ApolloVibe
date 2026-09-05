@@ -475,7 +475,9 @@
     "wan_encryption_mode": "WAN Encryption Mode",
     "wan_encryption_mode_1": "Enabled for supported clients (default)",
     "wan_encryption_mode_2": "Required for all clients",
-    "wan_encryption_mode_desc": "This determines when encryption will be used when streaming over the Internet. Encryption can reduce streaming performance, particularly on less powerful hosts and clients."
+    "wan_encryption_mode_desc": "This determines when encryption will be used when streaming over the Internet. Encryption can reduce streaming performance, particularly on less powerful hosts and clients.",
+    "wol_mac": "Wake-on-LAN MAC Address",
+    "wol_mac_desc": "MAC address reported to paired clients for Wake-on-LAN. Leave empty to use the network adapter that serves the connection. Set this only if that adapter cannot wake the machine and a different one handles Wake-on-LAN, otherwise clients will send wake packets to a card that ignores them."
   },
   "login": {
     "save_password": "Remember Password"

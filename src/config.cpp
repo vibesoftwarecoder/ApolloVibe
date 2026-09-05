@@ -1224,6 +1224,7 @@ namespace config {
     path_f(vars, "credentials_file", config::sunshine.credentials_file);
 
     string_f(vars, "external_ip", nvhttp.external_ip);
+    string_f(vars, "wol_mac", nvhttp.wol_mac);
     list_prep_cmd_f(vars, "global_prep_cmd", config::sunshine.prep_cmds);
     list_prep_cmd_f(vars, "global_state_cmd", config::sunshine.state_cmds);
     list_server_cmd_f(vars, "server_cmd", config::sunshine.server_cmds);

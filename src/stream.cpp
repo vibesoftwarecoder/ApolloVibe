@@ -274,7 +274,7 @@ namespace stream {
 
   static inline void while_starting_do_nothing(std::atomic<session::state_e> &state) {
     while (state.load(std::memory_order_acquire) == session::state_e::STARTING) {
-      std::this_thread::sleep_for(1ms);
+      std::this_thread::sleep_for(5ms);
     }
   }
 

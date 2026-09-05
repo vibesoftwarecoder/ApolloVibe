@@ -192,6 +192,12 @@ namespace config {
     std::string file_state;
 
     std::string external_ip;
+
+    // MAC address advertised to paired clients for Wake-on-LAN.
+    // Empty means derive it from the interface serving the request, which is
+    // wrong when the streaming NIC cannot wake the machine and a second NIC
+    // handles wake duty. Set this to the wake-capable NIC's MAC in that case.
+    std::string wol_mac;
   };
 
   struct input_t {

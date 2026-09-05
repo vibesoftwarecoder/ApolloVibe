@@ -5,10 +5,17 @@
 #include <initguid.h>
 #include <combaseapi.h>
 #include <thread>
+#include <cstdio>
+#include <cstdarg>
 
 #include <wrl/client.h>
 #include <dxgi.h>
 #include <highlevelmonitorconfigurationapi.h>
+
+// The [SUDOVDA] diagnostics in this file are printf-to-stdout, which never reaches
+// sunshine.log — so a virtual display that fails to appear leaves no trace at all.
+// createVirtualDisplay() logs through BOOST_LOG instead; see the notes there.
+#include "src/logging.h"
 #include <physicalmonitorenumerationapi.h>
 #include <dxgi1_6.h>
 
@@ -653,6 +660,89 @@ bool setRenderAdapterByName(const std::wstring& adapterName) {
 	return false;
 }
 
+// Diagnostic log (apollo.log captures BOOST_LOG, not these printfs, so write to a file).
+static void activateLog(const char* fmt, ...) {
+	FILE* f = nullptr;
+	if (fopen_s(&f, "C:\\ProgramData\\MultiSeat\\sudovda-activate.log", "a") != 0 || !f) {
+		return;
+	}
+	SYSTEMTIME st; GetLocalTime(&st);
+	fprintf(f, "%02d:%02d:%02d.%03d ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+	va_list args; va_start(args, fmt); vfprintf(f, fmt, args); va_end(args);
+	fputc('\n', f);
+	fclose(f);
+}
+
+// Force a just-added (possibly inactive) virtual display into the active display
+// topology so it receives a GDI source name. On a MultiSeat seat the RDP indirect
+// display already owns the desktop, so the SudoVDA monitor arrives
+// connected-but-inactive and GetAddedDisplayName (active paths only) never finds it.
+// We locate the path by target id across ALL paths, mark it active, and let Windows
+// compute the modes; if the target can't be located while inactive, fall back to
+// extending the desktop across all connected displays. Returns true on apparent success.
+static bool activateAddedDisplay(const VIRTUAL_DISPLAY_ADD_OUT& addedDisplay) {
+	UINT pathCount = 0, modeCount = 0;
+	if (GetDisplayConfigBufferSizes(QDC_ALL_PATHS, &pathCount, &modeCount)) {
+		activateLog("GetDisplayConfigBufferSizes(QDC_ALL_PATHS) failed");
+		return false;
+	}
+
+	std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+	std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+	if (QueryDisplayConfig(QDC_ALL_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr)) {
+		activateLog("QueryDisplayConfig(QDC_ALL_PATHS) failed");
+		return false;
+	}
+	paths.resize(pathCount);
+	modes.resize(modeCount);
+
+	// The seat's RDP session stacks ~16 active RdpIdd displays and Windows rejects any
+	// config that ADDS SudoVDA on top of them (ERROR_INVALID_PARAMETER). So instead
+	// REPLACE the topology with a single active path — just the SudoVDA target. This
+	// recreates the pre-6/10 condition where SudoVDA is the sole display, and is the
+	// simplest config Windows will accept. SDC_ALLOW_CHANGES computes its mode.
+	// Match on BOTH adapter LUID and target id. targetInfo.id is only unique within an
+	// adapter; the seat's ~16 RdpIdd targets can carry the same id as SudoVDA. Matching id
+	// alone hit an active RdpIdd path and reported a FALSE "already active", so the real
+	// (inactive) SudoVDA target was never activated. Note: the caller only reaches here when
+	// GetAddedDisplayName (QDC_ONLY_ACTIVE_PATHS) found the target NOT active, so we must not
+	// trust the ALL_PATHS active flag to short-circuit — always proceed to activate.
+	DISPLAYCONFIG_PATH_INFO target{};
+	bool found = false;
+	for (auto& path : paths) {
+		if (path.targetInfo.id != addedDisplay.TargetId
+			|| path.targetInfo.adapterId.HighPart != addedDisplay.AdapterLuid.HighPart
+			|| path.targetInfo.adapterId.LowPart != addedDisplay.AdapterLuid.LowPart) {
+			continue;
+		}
+		found = true;
+		target = path;
+		break;
+	}
+
+	if (found) {
+		target.flags |= DISPLAYCONFIG_PATH_ACTIVE;
+		target.sourceInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+		target.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+		LONG result = SetDisplayConfig(
+			1, &target, 0, nullptr,
+			SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE
+		);
+		activateLog("single-display activate target=%u result=%ld", addedDisplay.TargetId, result);
+		if (result == ERROR_SUCCESS) {
+			return true;
+		}
+	} else {
+		activateLog("target %u NOT found among %u all-paths", addedDisplay.TargetId, pathCount);
+	}
+
+	// Fallback: extend the desktop across all connected displays (activates the new monitor
+	// without needing to match the inactive target by id).
+	LONG extResult = SetDisplayConfig(0, nullptr, 0, nullptr, SDC_APPLY | SDC_TOPOLOGY_EXTEND);
+	activateLog("topology-extend fallback result=%ld", extResult);
+	return extResult == ERROR_SUCCESS;
+}
+
 std::wstring createVirtualDisplay(
 	const char* s_client_uid,
 	const char* s_client_name,
@@ -667,23 +757,51 @@ std::wstring createVirtualDisplay(
 
 	VIRTUAL_DISPLAY_ADD_OUT output;
 	if (!AddVirtualDisplay(SUDOVDA_DRIVER_HANDLE, width, height, fps, guid, s_client_name, s_client_uid, output)) {
-		printf("[SUDOVDA] Failed to add virtual display.\n");
+		BOOST_LOG(warning) << "SudoVDA: AddVirtualDisplay failed (GetLastError=" << GetLastError() << ")";
 		return std::wstring();
 	}
 
+	// The newly-added SudoVDA monitor may surface a little late, and on a MultiSeat
+	// seat it arrives inactive because the RDP indirect display already owns the
+	// desktop. Poll for its GDI name and, until it appears, force it into the active
+	// topology.
+	//
+	// Budget stays at 5s. It was raised to 15s on 2026-08-14 to test whether activation
+	// inside an RDP-loopback seat was merely slow; it is not. QueryDisplayConfig in the
+	// seat session returns 256 paths and the newly added SudoVDA target (id 256/257/258,
+	// incrementing per seat) is never among them, so activateAddedDisplay cannot act on a
+	// target the session cannot enumerate — see C:\ProgramData\MultiSeat\sudovda-activate.log.
+	// Waiting longer only stalls every seat connect, so the extra 10s was reverted.
 	uint32_t retryInterval = 20;
+	uint32_t elapsed = 0;
+	const uint32_t maxWaitMs = 5000;
 	wchar_t deviceName[CCHDEVICENAME]{};
 	while (!GetAddedDisplayName(output, deviceName)) {
+		activateAddedDisplay(output);
 		Sleep(retryInterval);
-		if (retryInterval > 320) {
-			printf("[SUDOVDA] Cannot get name for newly added virtual display!\n");
+		elapsed += retryInterval;
+		if (elapsed >= maxWaitMs) {
+			BOOST_LOG(warning)
+				<< "SudoVDA: display was added but never became nameable/active after "
+				<< elapsed << "ms — RDP indirect display likely still owns the topology";
 			return std::wstring();
 		}
-		retryInterval *= 2;
+		if (retryInterval < 250) {
+			retryInterval *= 2;
+		}
 	}
 
-	wprintf(L"[SUDOVDA] Virtual display added successfully: %ls\n", deviceName);
-	printf("[SUDOVDA] Configuration: W: %d, H: %d, FPS: %d\n", width, height, fps);
+	// GDI device names are ASCII (e.g. "\\.\DISPLAY6"), so a narrowing copy is enough
+	// here and keeps this file free of a dependency on the platform string helpers.
+	std::string narrowName;
+	for (const wchar_t *p = deviceName; *p; ++p) {
+		narrowName.push_back(static_cast<char>(*p));
+	}
+
+	BOOST_LOG(info)
+		<< "SudoVDA: virtual display ready after " << elapsed << "ms — "
+		<< narrowName << " at " << width << "x" << height
+		<< " @ " << (fps / 1000.0) << "Hz";
 
 	return std::wstring(deviceName);
 }
