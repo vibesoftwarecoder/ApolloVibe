@@ -31,7 +31,7 @@ rebrand, version/update URLs, mic lineage, AMD/BOOST fixes). A fast-forward woul
 ⛔ **Do not merge `logabell/master` either — it is 14 commits BEHIND ClassicOldSong**, so it drags
 the tree backwards. `logabell/feature/microphone-passthrough` is 785 behind: stale, ignore it.
 
-⚠️ **`C:\Users\roelb\Apollo-master` is NOT a git repo** — an unpacked source tree that looks like a
+⚠️ **`%USERPROFILE%\Apollo-master` is NOT a git repo** — an unpacked source tree that looks like a
 clone. The working repo is `Apollo-Development`.
 
 Related forks under `vibesoftwarecoder`: `moonlight-common-c`, `moonlight-common-c-mic`; and
@@ -51,7 +51,7 @@ package_apollovibe.bat <ver>    :: stages build/{sunshine.exe,assets,tools} into
 
 Build output is gitignored (`38d1f013`): the zip, `_repackage/`, `build_apollovibe.log`.
 
-⚠️ **These scripts once hardcoded `C:\Users\roelb\...`** and would have published a username to a
+⚠️ **These scripts once hardcoded `C:\Users\<username>\...`** and would have published a username to a
 public fork. They were fixed before being committed, and reading them first is what caught it.
 **Always read build tooling before committing it to a public repo** — absolute local paths hide
 there.
@@ -164,7 +164,7 @@ follows a real incident.
   per-process GPU encode utilisation, which also names which Apollo is busy.
 - ⛔ **Reboots are the user's call.** Stage them and say so; never run `Restart-Computer`.
 - ⛔ **This fork is public.** Read anything before committing it, especially build tooling — these
-  scripts once carried `C:\Users\roelb\...` and would have published a username.
+  scripts once carried `C:\Users\<username>\...` and would have published a username.
 - ⚠️ **Deploying a new `sunshine.exe` is manual, and a stale binary looks identical.** Verify with a
   log line only the new build emits.
 - ⚠️ **Validate an instrument before trusting what it says.** A probe that returns the same answer
