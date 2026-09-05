@@ -5,13 +5,18 @@ body:
   - type: markdown
     attributes:
       value: |
-        **Before you file:** if a MultiSeat *seat* fails to provision, or a seat goes green and
-        nothing happens, that belongs on
-        [vibesoftwarecoder/MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat/issues) instead.
+        **ApolloVibe problems belong here** — including ones that turn out to come from upstream
+        Apollo. If a fix belongs upstream we will take it there ourselves. Working out whose code
+        it is should be our job, not yours.
 
-        If the problem also happens on stock
-        [ClassicOldSong/Apollo](https://github.com/ClassicOldSong/Apollo), report it there — we
-        track that upstream rather than fixing it twice.
+        Two things do go faster filed where they live:
+
+        - A MultiSeat *seat* will not provision, or goes green and nothing happens →
+          [MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat/issues).
+        - The Moonlight client itself →
+          [MoonlightVibe](https://github.com/vibesoftwarecoder/MoonlightVibe/issues).
+
+        If you are not sure, file it here and we will move it.
 
   - type: input
     id: version
@@ -21,6 +26,19 @@ body:
       placeholder: v2026.6.1-multiseat.1
     validations:
       required: true
+
+  - type: dropdown
+    id: also-stock
+    attributes:
+      label: If you happen to run stock Apollo as well, does it do this too? (optional)
+      description: >
+        Only answer if you already have it — please do not install another build to fill this in.
+        It tells us whether to look first in our own changes or in upstream's, which changes where
+        we start. Either way the report stays with us.
+      options:
+        - "Not tried, or I do not run stock Apollo"
+        - "No — stock Apollo is fine, only ApolloVibe does this"
+        - "Yes — stock Apollo does it too"
 
   - type: dropdown
     id: which-apollo

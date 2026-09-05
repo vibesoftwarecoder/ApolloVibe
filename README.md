@@ -15,10 +15,12 @@
 > | Streaming, encoding, capture, host audio or input in ApolloVibe | **here** |
 > | The client: seat discovery, gamepad, microphone passthrough | [MoonlightVibe](https://github.com/vibesoftwarecoder/MoonlightVibe/issues) |
 > | A seat will not provision, or a seat streams the wrong desktop | [MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat/issues) |
-> | It also happens on stock Apollo | [ClassicOldSong/Apollo](https://github.com/ClassicOldSong/Apollo/issues) |
 >
 > A failure that looks like a MultiSeat provisioning bug is often an ApolloVibe one, so if you are
 > unsure, file it either way and we will move it.
+>
+> **Problems that turn out to come from upstream Apollo still belong here.** If a fix belongs
+> upstream we will take it there ourselves — working out whose code it is is our job, not yours.
 
 
 **ApolloVibe** is a Windows game streaming host built for [MultiSeat](https://github.com/vibesoftwarecoder/MultiSeat) — a system that runs multiple simultaneous Moonlight streaming sessions on one machine.

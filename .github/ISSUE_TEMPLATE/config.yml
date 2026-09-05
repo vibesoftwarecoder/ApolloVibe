@@ -5,8 +5,8 @@ contact_links:
     about: >
       A seat that will not provision, goes green and then nothing, or input and audio isolation
       between seats. Most reports that look like an ApolloVibe fault start here.
-  - name: Apollo upstream (ClassicOldSong)
-    url: https://github.com/ClassicOldSong/Apollo/issues
+  - name: MoonlightVibe — the client
+    url: https://github.com/vibesoftwarecoder/MoonlightVibe/issues
     about: >
-      If the problem reproduces on stock Apollo, report it upstream. ApolloVibe only carries our
-      own changes on top.
+      Decoding, seat discovery, gamepad or microphone passthrough on the client side rather than
+      the host.
