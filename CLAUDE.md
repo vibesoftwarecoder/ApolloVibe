@@ -129,7 +129,21 @@ This is the single most useful setting when diagnosing an encoder.
 
 `make_synced_session` returns `std::nullopt` when `make_encode_device` yields null, **without
 logging** — while every failure path inside the D3D11 encode-device setup does log. So a log that
-stops right after `Creating encoder` means the encoder failed to open, not that Apollo crashed.
+stops right after `Creating encoder` is not evidence of a crash.
+
+⚠️ **But silence there has two causes, and they need opposite fixes. Check whether the process is
+still alive before concluding anything.**
+
+| the process | what it means |
+|---|---|
+| **exits** within seconds | the encoder failed to open, and the reason was discarded. Set the log level to `verbose` to recover it |
+| **stays alive**, one CPU core at 100% | the encoder opened *fine* and the encode loop is spinning |
+
+The second case was measured on 2026-09-05 (MultiSeat issue #24, an AMD host). At `verbose` the log
+showed `h264_amf` configuring, then `Frame 1: IDR Keyframe` with a complete AUD/SPS/PPS/IDR set —
+so the encoder worked. What followed was one `SubmitInput`, no second frame, and `QueryOutput()`
+repeating with **zero errors**, filling 30 MB of log in seconds and pinning one core. That is a
+hang, not a failed encoder, and it reads identically at `info` level.
 
 ### `SUNSHINE_ASSETS_DIR` is a RELATIVE string on Windows
 
