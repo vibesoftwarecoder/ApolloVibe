@@ -14,8 +14,10 @@ C++ / CMake / Ninja, MSVC on Windows. The web UI is Vite.
 | `upstream` | `ClassicOldSong/Apollo` | Apollo proper, by ClassicOldSong |
 | `logabell` | `logabell/Apollo` | the microphone-passthrough fork |
 
-**Work on `apollovibe-dev`.** It is the integration branch and is currently **21 ahead of / 14
-behind `origin/master`** — diverged, so it cannot fast-forward. `master` carries our commits too.
+**Work on `master`.** As of 2026-09-04 `master` and `apollovibe-dev` were collapsed into one
+branch and are **identical**. `master` is the default branch, the branch releases are built from,
+and the only branch GitHub reads issue templates from. `apollovibe-dev` is kept as a redundant
+pointer for now; it carries nothing `master` lacks.
 
 ⛔ **Do not merge `logabell/feature/microphone-passthrough`.** That work is already absorbed;
 merging it again re-applies changes that are in the tree.
@@ -24,9 +26,17 @@ merging it again re-applies changes that are in the tree.
 (Chase Payne) writes `libvirtualdisplay` and Vibeshine. Conflating them has produced wrong
 conclusions before.
 
-⛔ **`origin/master` cannot be fast-forwarded.** It carries **13 of our own commits** (the ApolloVibe
-rebrand, version/update URLs, mic lineage, AMD/BOOST fixes). A fast-forward would destroy them.
-**Check `git rev-list --left-right --count` in BOTH directions before any merge advice.**
+✅ **The old two-branch split is gone** (merge `a68da22a`). `master` previously carried 13 commits
+of ours that a fast-forward would have destroyed — the ApolloVibe rebrand, version/update URLs, mic
+lineage, AMD/BOOST fixes. Those are now on the single branch along with everything from
+`apollovibe-dev`.
+
+⚠️ **Still check `git rev-list --left-right --count` in BOTH directions before any merge advice.**
+The rule outlived the specific divergence that produced it.
+
+⚠️ **`upstream/master` has been dormant since 2026-05-21** and we are 0 behind it. If ClassicOldSong
+resumes, merge often — the rebrand touches user-facing strings all over the tree, so conflicts scale
+with how far behind you let it drift.
 
 ⛔ **Do not merge `logabell/master` either — it is 14 commits BEHIND ClassicOldSong**, so it drags
 the tree backwards. `logabell/feature/microphone-passthrough` is 785 behind: stale, ignore it.
