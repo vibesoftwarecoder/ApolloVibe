@@ -1154,7 +1154,16 @@ namespace config {
 
     std::string rc;
     string_f(vars, "amd_rc", rc);
-    int_f(vars, "amd_coder", video.amd.amd_coder, amd::coder_from_view);
+
+    // Only set `amd_coder` when the user actually configured it. It used to be a plain int parsed
+    // with int_f, which always produced a value (`auto` when unset), so the `coder` option was
+    // forced onto every AMF encode. Every sibling AMD setting is already std::optional and follows
+    // the pattern below. See GH ApolloVibe#2.
+    std::string coder;
+    string_f(vars, "amd_coder", coder);
+    if (!coder.empty()) {
+      video.amd.amd_coder = amd::coder_from_view(coder);
+    }
     if (!rc.empty()) {
       video.amd.amd_rc_h264 = amd::rc_from_view<amd::rc_h264_e>(rc, video.amd.amd_rc_h264);
       video.amd.amd_rc_hevc = amd::rc_from_view<amd::rc_hevc_e>(rc, video.amd.amd_rc_hevc);

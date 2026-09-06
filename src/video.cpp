@@ -826,7 +826,12 @@ namespace video {
       },
       {
         // SDR-specific options
-        {"profile"s, "high"s},
+        //
+        // No `profile` here, deliberately. Sunshine sets a profile for nvenc and qsv but not for
+        // AMF, and Apollo v0.4.6 did not set one either — both are confirmed working on the AMD
+        // Vega iGPU in GH ApolloVibe#2, where forcing `profile: high` accompanies an encode loop
+        // that spins after the first frame. Leaving it unset lets AMF pick, which is what every
+        // known-good build on that hardware does.
       },
       {},  // HDR-specific options
       {},  // YUV444 SDR-specific options

@@ -69,7 +69,7 @@ namespace config {
       std::optional<int> amd_quality_av1;
       std::optional<int> amd_preanalysis;
       std::optional<int> amd_vbaq;
-      int amd_coder;
+      std::optional<int> amd_coder;  ///< Unset unless the user configures `amd_coder`; see config.cpp.
     } amd;
 
     struct {
