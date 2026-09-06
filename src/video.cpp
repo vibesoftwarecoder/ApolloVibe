@@ -325,11 +325,26 @@ namespace video {
     avcodec_encode_session_t(avcodec_encode_session_t &&other) noexcept = default;
 
     ~avcodec_encode_session_t() {
-      // Flush any remaining frames in the encoder
-      if (avcodec_send_frame(avcodec_ctx.get(), nullptr) == 0) {
-        packet_raw_avcodec pkt;
-        while (avcodec_receive_packet(avcodec_ctx.get(), pkt.av_packet) == 0);
-      }
+      // ⛔ DO NOT re-add a flush here without ALSO bumping third-party/build-deps.
+      //
+      // Upstream Sunshine added a drain to this destructor in 02036920, "build(deps): Update to
+      // FFmpeg 8.0 branch (#4143)". That single commit changed BOTH src/video.cpp and the
+      // build-deps submodule (94369e63 -> a21ef2e3): the drain was written for FFmpeg 8.0.
+      //
+      // Apollo merged the source half and kept its own older build-deps pin (a9a7f863, July 2025,
+      // FFmpeg "6400860"), so the drain ran against a pre-8.0 FFmpeg. On AMD/AMF,
+      // avcodec_send_frame(ctx, nullptr) then never returns - the process wedges with one core
+      // pinned. Measured on a Vega iGPU via an instrumented build for GH ApolloVibe#2: the log
+      // stops immediately before that call and never reaches the line after it. NVENC drains
+      // immediately, which is why only AMD users hit it.
+      //
+      // Removing the drain costs nothing. It received packets into a local that was discarded on
+      // the next line, so it moved no data - its only effect was to let the encoder drain before
+      // a teardown that destroys everything regardless. Apollo v0.4.6 has no such drain and is
+      // confirmed working on the same hardware.
+      //
+      // The properly aligned fix is to bump build-deps to an FFmpeg the drain was written for.
+      // That belongs upstream; this keeps the fork working until it lands.
 
       // Order matters here because the context relies on the hwdevice still being valid
       avcodec_ctx.reset();
