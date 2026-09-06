@@ -331,19 +331,25 @@ namespace video {
       // FFmpeg 8.0 branch (#4143)". That single commit changed BOTH src/video.cpp and the
       // build-deps submodule (94369e63 -> a21ef2e3): the drain was written for FFmpeg 8.0.
       //
-      // Apollo merged the source half and kept its own older build-deps pin (a9a7f863, July 2025,
-      // FFmpeg "6400860"), so the drain ran against a pre-8.0 FFmpeg. On AMD/AMF,
-      // avcodec_send_frame(ctx, nullptr) then never returns - the process wedges with one core
-      // pinned. Measured on a Vega iGPU via an instrumented build for GH ApolloVibe#2: the log
-      // stops immediately before that call and never reaches the line after it. NVENC drains
-      // immediately, which is why only AMD users hit it.
+      // Apollo took BOTH halves correctly at the time and carried the 8.0 pin for seven weeks.
+      // Then 10fd290b, "Merge remote-tracking branch 'sunshine/master'" (2025-09-27), rolled the
+      // submodule back to a9a7f863 - a build-deps commit from 2025-07-12, a month older than the
+      // 8.0 bump. Neither parent of that merge pins it (db4c2fab -> cf5dffaf, 1a96d135 ->
+      // c38829d6), so it looks like a submodule conflict resolved to a stale value. Apollo master
+      // still pins a9a7f863 today, FFmpeg "6400860".
+      //
+      // So the drain runs against a pre-8.0 FFmpeg. On AMD/AMF, avcodec_send_frame(ctx, nullptr)
+      // never returns - the process wedges with one core pinned. Measured on a Vega iGPU via an
+      // instrumented build for GH ApolloVibe#2: the log stops immediately before that call and
+      // never reaches the line after it. NVENC drains immediately, which is why only AMD users
+      // hit it.
       //
       // Removing the drain costs nothing. It received packets into a local that was discarded on
       // the next line, so it moved no data - its only effect was to let the encoder drain before
       // a teardown that destroys everything regardless. Apollo v0.4.6 has no such drain and is
       // confirmed working on the same hardware.
       //
-      // The properly aligned fix is to bump build-deps to an FFmpeg the drain was written for.
+      // The properly aligned fix is to restore the build-deps pin 10fd290b discarded (c38829d6).
       // That belongs upstream; this keeps the fork working until it lands.
 
       // Order matters here because the context relies on the hwdevice still being valid
