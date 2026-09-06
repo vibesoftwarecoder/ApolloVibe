@@ -325,11 +325,34 @@ namespace video {
     avcodec_encode_session_t(avcodec_encode_session_t &&other) noexcept = default;
 
     ~avcodec_encode_session_t() {
-      // Flush any remaining frames in the encoder
-      if (avcodec_send_frame(avcodec_ctx.get(), nullptr) == 0) {
+      // [PROBE] Instrumented diagnostic build for GH ApolloVibe#2. NOT for release.
+      // This destructor runs when a probe session is torn down, which is exactly where the
+      // reporter's log stops. The drain loop below is a `while (...);` with an empty body in
+      // stock code, so a non-terminating drain presents as one core pinned at 100% with no
+      // further output - the reported symptom. It is bounded here so the build escapes the
+      // condition instead of hanging, and reports how many packets it drained.
+      BOOST_LOG(info) << "[PROBE] ~session: entering flush"sv;
+      auto send_status = avcodec_send_frame(avcodec_ctx.get(), nullptr);
+      BOOST_LOG(info) << "[PROBE] ~session: send_frame(nullptr) returned "sv << send_status;
+      if (send_status == 0) {
         packet_raw_avcodec pkt;
-        while (avcodec_receive_packet(avcodec_ctx.get(), pkt.av_packet) == 0);
+        uint64_t drained = 0;
+        int rp = 0;
+        while ((rp = avcodec_receive_packet(avcodec_ctx.get(), pkt.av_packet)) == 0) {
+          ++drained;
+          if (drained <= 5 || drained % 5000 == 0) {
+            BOOST_LOG(info) << "[PROBE] ~session: drained "sv << drained << " packet(s)"sv;
+          }
+          if (drained >= 200000) {
+            BOOST_LOG(error) << "[PROBE] ~session: ABORTING drain after "sv << drained
+                             << " packets - the flush loop is NOT terminating"sv;
+            break;
+          }
+        }
+        BOOST_LOG(info) << "[PROBE] ~session: drain ended after "sv << drained
+                        << " packet(s), receive_packet returned "sv << rp;
       }
+      BOOST_LOG(info) << "[PROBE] ~session: flush complete, resetting context"sv;
 
       // Order matters here because the context relies on the hwdevice still being valid
       avcodec_ctx.reset();
@@ -1783,8 +1806,10 @@ namespace video {
       }
 
       // Allow the encoding device a final opportunity to set/unset or override any options
+      BOOST_LOG(info) << "[PROBE] init_codec_options for ["sv << video_format.name << "] (retry "sv << retries << ')';
       encode_device->init_codec_options(ctx.get(), &options);
 
+      BOOST_LOG(info) << "[PROBE] calling avcodec_open2 for ["sv << video_format.name << ']';
       if (auto status = avcodec_open2(ctx.get(), codec, &options)) {
         char err_str[AV_ERROR_MAX_STRING_SIZE] {0};
 
@@ -1805,6 +1830,7 @@ namespace video {
       }
 
       // Successfully opened the codec
+      BOOST_LOG(info) << "[PROBE] avcodec_open2 SUCCEEDED for ["sv << video_format.name << ']';
       break;
     }
 
