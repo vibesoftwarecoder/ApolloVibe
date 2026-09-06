@@ -770,15 +770,17 @@ namespace platf::dxgi {
         return -1;
       }
 
-      status = dxgi->SetGPUThreadPriority(0x4000001E);
+      // TEST BUILD (GH ApolloVibe#2): the absolute-priority request from upstream 5af771d2
+      // ("Priority hack") is removed here, leaving only the relative request that v0.4.6 makes.
+      // 0x4000001E is far outside the -7..7 range IDXGIDevice::SetGPUThreadPriority documents.
+      // On the reporter's Vega iGPU it fails, logs "Failed to request absoloute encoding GPU
+      // thread priority", and that line is the LAST thing written before h264_amf creation hangs.
+      // v0.4.6 issues only SetGPUThreadPriority(7) here and does not hang on the same hardware.
+      status = dxgi->SetGPUThreadPriority(7);
       if (FAILED(status)) {
-        BOOST_LOG(info) << "Failed to request absoloute encoding GPU thread priority. Trying relative priority.";
-        status = dxgi->SetGPUThreadPriority(7);
-        if (FAILED(status)) {
-          BOOST_LOG(warning) << "Failed to request relative encoding GPU thread priority. Please run application as administrator for optimal performance.";
-        } else {
-          BOOST_LOG(info) << "Relative encoding GPU thread priority request success.";
-        }
+        BOOST_LOG(warning) << "Failed to request relative encoding GPU thread priority. Please run application as administrator for optimal performance.";
+      } else {
+        BOOST_LOG(info) << "Relative encoding GPU thread priority request success.";
       }
 
       auto default_color_vectors = ::video::color_vectors_from_colorspace(::video::colorspace_e::rec601, false);

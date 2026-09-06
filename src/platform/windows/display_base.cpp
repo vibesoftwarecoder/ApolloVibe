@@ -685,15 +685,16 @@ namespace platf::dxgi {
         return -1;
       }
 
-      status = dxgi->SetGPUThreadPriority(0x4000001E);
+      // TEST BUILD (GH ApolloVibe#2): see the matching note in display_vram.cpp. Upstream 5af771d2
+      // ("Priority hack") added an absolute request of 0x4000001E, far outside the -7..7 range
+      // IDXGIDevice::SetGPUThreadPriority documents. v0.4.6 issues only the relative request below
+      // and does not exhibit the AMD encode-loop spin. Both call sites are reverted together so the
+      // test isolates the hack rather than one half of it.
+      status = dxgi->SetGPUThreadPriority(7);
       if (FAILED(status)) {
-        BOOST_LOG(info) << "Failed to request absoloute capture GPU thread priority. Trying relative priority.";
-        status = dxgi->SetGPUThreadPriority(7);
-        if (FAILED(status)) {
-          BOOST_LOG(warning) << "Failed to request relative capture GPU thread priority. Please run application as administrator for optimal performance.";
-        } else {
-          BOOST_LOG(info) << "Relative capture GPU thread priority request success.";
-        }
+        BOOST_LOG(warning) << "Failed to request relative capture GPU thread priority. Please run application as administrator for optimal performance.";
+      } else {
+        BOOST_LOG(info) << "Relative capture GPU thread priority request success.";
       }
     }
 
