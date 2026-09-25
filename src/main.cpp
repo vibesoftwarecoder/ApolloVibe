@@ -159,8 +159,9 @@ int main(int argc, char *argv[]) {
   mail::man = std::make_shared<safe::mail_raw_t>();
 
   // parse config file
-  if (config::parse(argc, argv)) {
-    return 0;
+  // parse returns 0 to continue, > 0 for a handled early exit (help, commands), < 0 on failure
+  if (auto parse_result = config::parse(argc, argv)) {
+    return parse_result < 0 ? 2 : 0;
   }
 
   auto log_deinit_guard = logging::init(config::sunshine.min_log_level, config::sunshine.log_file);
