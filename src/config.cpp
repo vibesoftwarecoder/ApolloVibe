@@ -1391,6 +1391,35 @@ namespace config {
     ::video::active_av1_mode = video.av1_mode;
   }
 
+  /**
+   * @brief Record a startup failure in a file, because logging is not initialized yet.
+   * @details Tries next to the executable, then the temp directory. Never throws.
+   */
+  static void write_startup_error(const std::string &message) {
+    try {
+      std::vector<std::filesystem::path> dirs;
+#ifdef _WIN32
+      WCHAR executable[MAX_PATH];
+      if (GetModuleFileNameW(nullptr, executable, ARRAYSIZE(executable)) != 0) {
+        dirs.emplace_back(std::filesystem::path {executable}.parent_path());
+      }
+#endif
+      dirs.emplace_back(std::filesystem::temp_directory_path());
+
+      for (const auto &dir : dirs) {
+        std::ofstream file {dir / "sunshine-startup-error.log", std::ios::app};
+        if (file) {
+          file << message << std::endl;
+          if (file) {
+            return;
+          }
+        }
+      }
+    } catch (...) {
+      // Nothing more can be done; this is a last-resort record
+    }
+  }
+
   int parse(int argc, char *argv[]) {
     std::unordered_map<std::string, std::string> cmd_vars;
 #ifdef _WIN32
@@ -1476,8 +1505,10 @@ namespace config {
       config_loaded = true;
     } catch (const std::filesystem::filesystem_error &err) {
       BOOST_LOG(fatal) << "Failed to apply config: "sv << err.what();
+      write_startup_error("Failed to apply config: "s + err.what());
     } catch (const boost::filesystem::filesystem_error &err) {
       BOOST_LOG(fatal) << "Failed to apply config: "sv << err.what();
+      write_startup_error("Failed to apply config: "s + err.what());
     }
 
 #ifdef _WIN32
@@ -1491,6 +1522,7 @@ namespace config {
 #else
     if (!config_loaded) {
 #endif
+      write_startup_error("Config was not loaded; exiting");
       return -1;
     }
 
