@@ -506,6 +506,29 @@ namespace display_device {
     }
 
     /**
+     * @brief Check if the requested FPS is equal in value to the refresh rate.
+     * @param requested_fps Requested FPS from the remapping entry, e.g. 60/1.
+     * @param refresh_rate Refresh rate from the session, e.g. 60000/1000 as the client FPS is in millihertz.
+     * @returns True if both values are equal, false otherwise.
+     * @note Rational values are compared by cross-multiplication, because the strict
+     *       equality of Rational compares the numerator and denominator separately.
+     */
+    bool is_requested_fps_matching(const FloatingPoint &requested_fps, const std::optional<FloatingPoint> &refresh_rate) {
+      if (!refresh_rate) {
+        return false;
+      }
+
+      const auto *lhs {std::get_if<Rational>(&requested_fps)};
+      const auto *rhs {std::get_if<Rational>(&*refresh_rate)};
+      if (!lhs || !rhs || lhs->m_denominator == 0 || rhs->m_denominator == 0) {
+        return requested_fps == *refresh_rate;
+      }
+
+      return static_cast<std::uint64_t>(lhs->m_numerator) * rhs->m_denominator ==
+             static_cast<std::uint64_t>(rhs->m_numerator) * lhs->m_denominator;
+    }
+
+    /**
      * @brief Remap the the requested display mode based on the config.
      * @param video_config User's video related configuration.
      * @param session Session information.
@@ -586,7 +609,7 @@ namespace display_device {
         }
 
         // Note: at this point config should already have parsed refresh rate set.
-        if (parsed_entry->requested_fps && parsed_entry->requested_fps != config.m_refresh_rate) {
+        if (parsed_entry->requested_fps && !is_requested_fps_matching(*parsed_entry->requested_fps, config.m_refresh_rate)) {
           BOOST_LOG(verbose) << "Skipping remapping because requested FPS do not match! Entry:\n"
                              << entry_to_string(entry);
           continue;
