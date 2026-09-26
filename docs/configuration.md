@@ -1113,27 +1113,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
-### isolated_virtual_display_option
-
-<table>
-    <tr>
-        <td>Description</td>
-        <td colspan="2">
-            Isolates the virtual display.
-            @note{Applies to Windows only.}
-        </td>
-    </tr>
-    <tr>
-        <td>Default</td>
-        <td colspan="2">@code{}disabled@endcode</td>
-    </tr>
-    <tr>
-        <td>enabled</td>
-        <td>Change the position of the virtual display (and other displays if there is a hole)</td>
-    </tr>
-</table>
-
-
 ### dd_configuration_option
 
 <table>
@@ -1538,6 +1517,26 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### isolated_virtual_display_option
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Isolates the virtual display.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}disabled@endcode</td>
+    </tr>
+    <tr>
+        <td>enabled</td>
+        <td>Change the position of the virtual display (and other displays if there is a hole)</td>
+    </tr>
+</table>
+
 ## Network
 
 ### upnp
@@ -1676,6 +1675,30 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             external_ip = 123.456.789.12
+            @endcode</td>
+    </tr>
+</table>
+
+### wol_mac
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The MAC address reported to paired clients for Wake-on-LAN. If empty, the MAC address of the
+            network adapter that serves the connection is reported.
+            @tip{Set this only if that adapter cannot wake the machine and a different adapter handles
+            Wake-on-LAN. Otherwise clients send wake packets to an adapter that ignores them.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">n/a</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            wol_mac = AA:BB:CC:DD:EE:FF
             @endcode</td>
     </tr>
 </table>
