@@ -5,9 +5,16 @@
 
 #include "../tests_common.h"
 
+#include <src/config.h>
 #include <src/nvhttp.h>
 
 using namespace nvhttp;
+
+// The server keeps every pairing in progress in this map (defined in src/nvhttp.cpp, not declared in the
+// header). The last pairing phase looks its session up there, so the test has to register it.
+namespace nvhttp {
+  extern std::unordered_map<std::string, pair_session_t> map_id_sess;
+}
 
 struct pairing_input {
   std::shared_ptr<pair_session_t> session;
@@ -76,7 +83,20 @@ X4wnh1bwdiidqpcgyuKossLOPxbS786WmsesaAWPnpoY6M8aija+ALwNNuWWmyMg
 9SVDV76xJzM36Uq7Kg3QJYTlY04WmPIdJHkCtXWf9g==
 -----END CERTIFICATE-----)";
 
-struct PairingTest: testing::TestWithParam<std::tuple<pairing_input, pairing_output>> {};
+struct PairingTest: testing::TestWithParam<std::tuple<pairing_input, pairing_output>> {
+  // A completed pairing saves the client list to the state file. Run with fresh state
+  // so the test never reads or writes a real one.
+  void SetUp() override {
+    was_fresh_state = config::sunshine.flags[config::flag::FRESH_STATE];
+    config::sunshine.flags[config::flag::FRESH_STATE] = true;
+  }
+
+  void TearDown() override {
+    config::sunshine.flags[config::flag::FRESH_STATE] = was_fresh_state;
+  }
+
+  bool was_fresh_state = false;
+};
 
 TEST_P(PairingTest, Run) {
   auto [input, expected] = GetParam();
@@ -108,23 +128,21 @@ TEST_P(PairingTest, Run) {
   input.session->serverchallenge = input.override_server_challenge;
 
   // phase 4
-  auto input_client_cert = input.session->client.cert;  // Will be moved
-  auto add_cert = std::make_shared<safe::queue_t<crypto::x509_t>>(30);
-  clientpairingsecret(*input.session, add_cert, tree, input.client_pairing_secret);
+  auto input_client_name = input.session->client.name;
+  auto clients_before = nvhttp::get_all_clients().size();
+  auto input_client_id = input.session->client.uniqueID;
+  auto &registered_session = map_id_sess.insert_or_assign(input_client_id, std::move(*input.session)).first->second;
+  clientpairingsecret(registered_session, tree, input.client_pairing_secret);
+  map_id_sess.erase(input_client_id);  // Only the last phase removes it, and only when it gets that far
   ASSERT_EQ(tree.get<int>("root.paired") == 1, expected.phase_4_success);
 
-  // Check that we actually added the input client certificate to `add_cert`
+  // A successful pairing registers the client with the server; a failed one must not.
+  auto clients_after = nvhttp::get_all_clients();
   if (expected.phase_4_success) {
-    ASSERT_EQ(add_cert->peek(), true);
-    auto cert = add_cert->pop();
-    char added_subject_name[256];
-    X509_NAME_oneline(X509_get_subject_name(cert.get()), added_subject_name, sizeof(added_subject_name));
-
-    auto input_cert = crypto::x509(input_client_cert);
-    char original_suject_name[256];
-    X509_NAME_oneline(X509_get_subject_name(input_cert.get()), original_suject_name, sizeof(original_suject_name));
-
-    ASSERT_EQ(std::string(added_subject_name), std::string(original_suject_name));
+    ASSERT_EQ(clients_after.size(), clients_before + 1);
+    ASSERT_EQ(clients_after.back()["name"].get<std::string>(), input_client_name);
+  } else {
+    ASSERT_EQ(clients_after.size(), clients_before);
   }
 }
 
@@ -252,8 +270,7 @@ TEST(PairingTest, OutOfOrderCalls) {
   serverchallengeresp(sess, tree, "test");
   ASSERT_FALSE(tree.get<int>("root.paired") == 1);
 
-  auto add_cert = std::make_shared<safe::queue_t<crypto::x509_t>>(30);
-  clientpairingsecret(sess, add_cert, tree, "test");
+  clientpairingsecret(sess, tree, "test");
   ASSERT_FALSE(tree.get<int>("root.paired") == 1);
 
   // This should work, it's the first time we call it
