@@ -238,6 +238,44 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### global_state_cmd
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            A list of commands to be run when a session resumes or pauses, for every application.
+            The `do` commands run when the first client connects while no other client is connected, including
+            the first connection after an app is launched. The `undo` commands run when the last client disconnects
+            while the app keeps running.
+            <br>
+            <br>
+            The commands run in order on a separate thread, and the list stops at the first command that fails.
+            They receive the same environment variables as the app, with `APOLLO_APP_STATUS` set to `RESUMING` or
+            `PAUSING`. The `undo` commands are not run when the app is terminated, or when the app is set to
+            terminate on pause.
+            <br>
+            <br>
+            An app can opt out of these commands with `exclude-global-state-cmd` and add its own with `state-cmd`
+            in `apps.json`.
+            @warning{These commands run on the host, and with `"elevated": true` they run elevated. Anyone who can
+            change the configuration can run commands on the host this way.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            []
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            global_state_cmd = [{"do":"cmd /C echo resumed","elevated":false,"undo":"cmd /C echo paused"}]
+            @endcode</td>
+    </tr>
+</table>
+
 ### notify_pre_releases
 
 <table>
@@ -280,6 +318,86 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             system_tray = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### hide_tray_controls
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Hide the control entries in the system tray menu, so that it only offers to open the web UI.
+            The hidden entries are the force stop entry for the running app, "Reset Display Device Config"
+            (Windows only), "Restart" and "Quit".
+            @note{The tray menu is built at startup, so a change takes effect after a restart. This only changes the
+            tray menu. The same actions remain available elsewhere, for example in the web UI.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            hide_tray_controls = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### enable_pairing
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Whether new Moonlight clients may pair with this host.
+            When disabled, every pairing request is refused with status 403 ("Pairing is disabled for this
+            instance"), including requests that use a PIN or an OTP.
+            @note{Clients that are already paired are not affected and can still connect. To remove a client,
+            unpair it in the web UI.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            enable_pairing = disabled
+            @endcode</td>
+    </tr>
+</table>
+
+### enable_discovery
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Whether to advertise this host on the local network with mDNS, so that clients find it automatically.
+            When disabled, the host is not advertised and clients must add it by its IP address or host name.
+            @warning{This only stops the host from being advertised. It does not block connections or pairing.
+            Use [enable_pairing](#enable_pairing) to stop new clients from pairing.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            enable_discovery = disabled
             @endcode</td>
     </tr>
 </table>
@@ -687,6 +805,65 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### enable_input_only_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Add a "Remote Input" entry to the app list. While another app is running, a "Terminate" entry is
+            also shown. A "Remote Input" session sends
+            input to the host but receives no video or audio. This is useful for controlling the desktop from a
+            phone while it is shown on a TV, or for connecting peripherals the TV does not support.
+            <br>
+            <br>
+            While an app other than "Remote Input" is running, the app list shows only that app, "Remote Input"
+            and "Terminate", and the only way to resume it is to launch the same app again. "Terminate" stops the
+            running app. A "Remote Input" session ends when its last client disconnects.
+            @note{While an app is running, a paired client that has only the view permission may start a
+            "Remote Input" session, in the same way it may join the running app. Such a client can only send
+            the input types its own input permissions allow.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            enable_input_only_mode = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### forward_rumble
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Whether to forward rumble (force feedback) from games on the host to the client's gamepad.
+            When disabled, rumble requests from the virtual gamepads are ignored.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            forward_rumble = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### keybindings
 
 <table>
@@ -942,6 +1119,58 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             install_steam_audio_drivers = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### keep_sink_default
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Whether to keep the virtual sink as the default audio device while it is in use. This applies when
+            audio is captured from a virtual sink, for example when the client has host audio playback turned off.
+            If another program or the user changes the default audio device during the stream, it is set back to
+            the virtual sink.
+            @note{This option is only supported on Windows.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            keep_sink_default = disabled
+            @endcode</td>
+    </tr>
+</table>
+
+### auto_capture_sink
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Whether to restart audio capture when the audio device changes during a stream, for example when the
+            default audio device changes or the captured device is removed. When enabled, capture is set up again
+            and picks up the new device. When disabled, capture is not set up again.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            auto_capture_sink = disabled
             @endcode</td>
     </tr>
 </table>
@@ -1465,6 +1694,86 @@ editing the `conf` file in a text editor. Use the examples as reference.
               ]
             }@endcode
         </td>
+    </tr>
+</table>
+
+### fallback_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The display mode to use when the client does not request one, for example when an app is launched from
+            the web UI. The format is `[Width]x[Height]x[FPS]`. The frame rate may have decimals, such as `59.94`.
+            If the value cannot be parsed, 1920x1080 at 60 FPS is used. Always give all three parts; a two-part
+            value such as `2560x1440` is not handled.
+            @note{A display mode set for a specific client in the web UI takes precedence over both the client's
+            request and this option.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            1920x1080x60
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            fallback_mode = 2560x1440x120
+            @endcode</td>
+    </tr>
+</table>
+
+### headless_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Create a virtual display for every app launch, even when the client and the app do not ask for one.
+            If the SudoVDA virtual display driver is not working, a warning is logged and the existing display is
+            captured instead.
+            @note{Applies to Windows only.}
+            @note{A virtual display is also created without this option when no active display is found.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            headless_mode = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### double_refreshrate
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Create virtual displays at twice the requested refresh rate. The stream itself keeps the requested
+            frame rate. Some users report that this reduces stutter.
+            @note{Applies to Windows only, and only when a virtual display is created.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            double_refreshrate = enabled
+            @endcode</td>
     </tr>
 </table>
 
@@ -2026,6 +2335,117 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### limit_framerate
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Limit the encoded frame rate to the frame rate the client requested when it launched the app.
+            When disabled, the frame rate the client sends when the stream is set up is used instead, which can be
+            higher, for example when a client's warp mode multiplies it.
+            @note{When enabled and a client's warp mode is detected, the bitrate is multiplied by the warp factor.}
+            @note{As reported by the option's text in the web UI, and not verified in the code: the stream may not
+            reach the full frame rate if vsync is enabled, and disabling this option can cause lag on some
+            clients.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            limit_framerate = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### envvar_compatibility_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Change the format of the `SUNSHINE_CLIENT_FPS` environment variable that apps and commands receive,
+            for tools that expect the older format. When disabled, it has three decimal places, for example
+            `59.940`. When enabled, the frame rate is rounded to the nearest whole number.
+            @note{When enabled, the rounded value is currently written with six decimal places, for example
+            `60.000000`. `APOLLO_CLIENT_FPS` is not affected by this option.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            envvar_compatibility_mode = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### legacy_ordering
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Make legacy clients show the app list in the configured order. The app names sent to clients get a
+            hidden prefix of zero-width characters that sorts in that order. Each client can be excluded from this
+            in the web UI, so the per-client setting must also allow it.
+            @warning{Clients or scripts that do not handle UTF-8 correctly may show or process the app names wrongly.}
+            @warning{Do not use this option with exactly one configured app. An exception is thrown while the app
+            list is built, so clients may receive an empty list.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            legacy_ordering = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### ignore_encoder_probe_failure
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When an app is launched while no stream is running, the encoders are probed again. If that probe
+            fails, the launch is refused with status 503. When this option is enabled, a warning is logged and the
+            launch continues. This applies only when a new app is started. Resuming a running app returns 503 on
+            a failed probe regardless of this option.
+            @warning{The stream may then fail if no encoder is actually available.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            ignore_encoder_probe_failure = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### hevc_mode
 
 <table>
@@ -2471,6 +2891,33 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             nvenc_h264_cavlc = disabled
+            @endcode</td>
+    </tr>
+</table>
+
+### nvenc_intra_refresh
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Intended to enable intra refresh for clients that need it to keep rendering correctly, such as the
+            Xbox client.
+            @attention{This option currently has no effect. It is read from the configuration, but the NVENC
+            encoder does not use it. Intra refresh is turned on only when the client requests it, for HEVC streams
+            on GPUs that support it.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            nvenc_intra_refresh = disabled
             @endcode</td>
     </tr>
 </table>
