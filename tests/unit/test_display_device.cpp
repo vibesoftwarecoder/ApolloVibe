@@ -219,11 +219,14 @@ INSTANTIATE_TEST_SUITE_P(
     std::make_pair(std::make_tuple(refresh_rate_option_e::disabled, client_fps_t {-1}), no_refresh_rate_tag_t {}),
     std::make_pair(std::make_tuple(refresh_rate_option_e::disabled, "invalid_refresh_rate"s), no_refresh_rate_tag_t {}),
     //---- Automatic cases ----
-    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, client_fps_t {60}), rational_t {60, 1}),
-    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, "60"s), rational_t {0, 1}),
-    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, "59.9885"s), rational_t {0, 1}),
+    // The client FPS in the launch session is in millihertz (nvhttp multiplies the client's
+    // value by 1000), so the automatic refresh rate is that value over 1000.
+    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, client_fps_t {60000}), rational_t {60000, 1000}),
+    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, client_fps_t {59940}), rational_t {59940, 1000}),
+    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, "60"s), rational_t {0, 1000}),
+    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, "59.9885"s), rational_t {0, 1000}),
     std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, client_fps_t {-1}), failed_to_parse_refresh_rate_tag_t {}),
-    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, "invalid_refresh_rate"s), rational_t {0, 1}),
+    std::make_pair(std::make_tuple(refresh_rate_option_e::automatic, "invalid_refresh_rate"s), rational_t {0, 1000}),
     //---- Manual cases ----
     std::make_pair(std::make_tuple(refresh_rate_option_e::manual, client_fps_t {60}), failed_to_parse_refresh_rate_tag_t {}),
     std::make_pair(std::make_tuple(refresh_rate_option_e::manual, "60"s), rational_t {60, 1}),
