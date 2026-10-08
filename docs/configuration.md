@@ -2446,6 +2446,38 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### input_desktop_wait_timeout
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            How many seconds to wait for the input desktop to become accessible before video capture or the
+            encoder probe starts. In a session that was just created, Windows shows the logon (Winlogon, secure)
+            desktop first. A normal process is denied access to it (error 5, ACCESS_DENIED), so display capture
+            cannot start until the user desktop appears. This can take about 30 seconds, and much longer while a
+            lock screen or credential prompt is up. Without the wait, the capture fails once and is not retried.
+            The wait ends as soon as the desktop opens, so a normal start is not delayed. It does not apply to
+            recovery while a stream is running.
+            If the wait runs out, the log says so and the start continues, which then fails as it did before.
+            A value of 0 turns the wait off.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            180
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            input_desktop_wait_timeout = 300
+            @endcode</td>
+    </tr>
+</table>
+
 ### hevc_mode
 
 <table>

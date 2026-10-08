@@ -32,6 +32,7 @@ extern "C" {
 #include "video.h"
 
 #ifdef _WIN32
+  #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
 extern "C" {
   #include <libavutil/hwcontext_d3d11va.h>
@@ -1085,6 +1086,29 @@ namespace video {
     true
   };
 
+  /**
+   * @brief Before the first display is created, wait for the input desktop to become accessible.
+   * @details A session that was just created shows the Winlogon (secure) desktop first, and display
+   *          capture fails with ACCESS_DENIED until the user desktop appears. This is for the initial
+   *          capture start and the encoder probe only; mid-stream recovery (`reset_display`) is unchanged.
+   *          A timeout or cancellation is logged by the platform code and the caller carries on, so the
+   *          start fails exactly as it did before this wait existed.
+   * @param extra_cancel Another reason to give up waiting, besides shutdown.
+   */
+  static void await_input_desktop_for_capture([[maybe_unused]] const std::function<bool()> &extra_cancel = {}) {
+#ifdef _WIN32
+    const auto timeout = std::chrono::seconds {config::video.input_desktop_wait_timeout};
+    if (timeout <= std::chrono::seconds::zero()) {
+      return;
+    }
+
+    auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+    platf::await_input_desktop(timeout, [&]() {
+      return shutdown_event->peek() || (extra_cancel && extra_cancel());
+    });
+#endif
+  }
+
   void reset_display(std::shared_ptr<platf::display_t> &disp, const platf::mem_type_e &type, const std::string &display_name, const config_t &config) {
     // We try this twice, in case we still get an error on reinitialization
     for (int x = 0; x < 2; ++x) {
@@ -1194,6 +1218,9 @@ namespace video {
     std::vector<std::string> display_names;
     int display_p = -1;
     std::shared_ptr<platf::display_t> disp;
+    await_input_desktop_for_capture([&]() {
+      return !capture_ctx_queue->running();
+    });
     if (!proc::proc.display_name.empty()) {
       disp = platf::display(encoder.platform_formats->dev_type, proc::proc.display_name, capture_ctxs.front().config);
     }
@@ -2731,7 +2758,7 @@ namespace video {
     return true;
   }
 
-  int probe_encoders() {
+  int probe_encoders(bool wait_for_input_desktop) {
     if (!allow_encoder_probing()) {
       // Error already logged
       return -1;
@@ -2742,6 +2769,12 @@ namespace video {
     // If we already have a good encoder, check to see if another probe is required
     if (chosen_encoder && !(chosen_encoder->flags & ALWAYS_REPROBE) && !platf::needs_encoder_reenumeration()) {
       return 0;
+    }
+
+    // A real probe is about to open displays. Wait once here, not once per encoder: if the wait
+    // ran out, every encoder in the list would otherwise wait out the full timeout again.
+    if (wait_for_input_desktop) {
+      await_input_desktop_for_capture();
     }
 
     // Restart encoder selection

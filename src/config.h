@@ -149,6 +149,7 @@ namespace config {
     std::string fallback_mode;
     bool isolated_virtual_display_option;
     bool ignore_encoder_probe_failure;
+    int input_desktop_wait_timeout;  ///< Seconds to wait for the input desktop at capture start (Windows). 0 = do not wait.
   };
 
   struct audio_t {

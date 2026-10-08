@@ -356,7 +356,7 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "No gamepad input is available"sv;
   }
 
-  if (video::probe_encoders()) {
+  if (video::probe_encoders(false)) {
 #ifdef _WIN32
     bool allow_probing = video::allow_encoder_probing();
     // Create a temporary virtual display for encoder capability probing
@@ -383,7 +383,7 @@ int main(int argc, char *argv[]) {
       std::this_thread::sleep_for(500ms);
 
       // Probe again anyways
-      if (video::probe_encoders()) {
+      if (video::probe_encoders(false)) {
         if (allow_probing) {
           BOOST_LOG(error) << "Video failed to find working encoder: allow probing but failed"sv;
         } else {

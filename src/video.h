@@ -361,7 +361,11 @@ namespace video {
    * ensure the best encoder is selected. Encoder availability can change
    * at runtime due to all sorts of things from driver updates to eGPUs.
    *
+   * @param wait_for_input_desktop On Windows, first wait (up to `input_desktop_wait_timeout`) for the
+   *        input desktop to become accessible, as a freshly created session shows the secure desktop
+   *        first. Only the startup probes pass false, so they do not hold up the web UI.
+   *
    * @warning This is only safe to call when there is no client actively streaming.
    */
-  int probe_encoders();
+  int probe_encoders(bool wait_for_input_desktop = true);
 }  // namespace video
