@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <string_view>
 
 namespace platf {
 
@@ -128,6 +129,51 @@ namespace platf {
         ++result.signal_wakeups;
       }
     }
+  }
+
+  /**
+   * @brief Who is asking for the input desktop, which decides how long they may wait for it.
+   * @details The HTTPS server runs one request at a time (Simple-Web-Server `thread_pool_size` defaults to 1),
+   *          so a handler that waits stalls every other request, including the client's serverinfo
+   *          polls (5 s timeout in moonlight-qt). Request threads therefore get a short cap.
+   */
+  enum class input_desktop_wait_context_e {
+    none,  ///< Startup probes: never wait, the web UI must come up.
+    request,  ///< An HTTP handler (launch, resume): short cap, then the client is told to retry.
+    capture,  ///< The capture thread: blocks no request, so the full timeout applies.
+  };
+
+  /**
+   * @brief How long a caller in the given context may wait for the input desktop.
+   * @param context Who is asking.
+   * @param capture_timeout `input_desktop_wait_timeout`: the full wait, 0 turns every wait off.
+   * @param request_timeout `input_desktop_wait_request_timeout`: the cap for request threads.
+   * @return The wait budget. A request never waits longer than the full timeout, so 0 there disables both.
+   */
+  inline std::chrono::seconds input_desktop_wait_budget(input_desktop_wait_context_e context, std::chrono::seconds capture_timeout, std::chrono::seconds request_timeout) {
+    using enum input_desktop_wait_context_e;
+    switch (context) {
+      case capture:
+        return std::max(capture_timeout, std::chrono::seconds::zero());
+      case request:
+        return std::max(std::min(request_timeout, capture_timeout), std::chrono::seconds::zero());
+      case none:
+      default:
+        return std::chrono::seconds::zero();
+    }
+  }
+
+  /**
+   * @brief The status message for a launch or resume refused because the encoder probe failed.
+   * @param desktop_inaccessible true if the input desktop could not be opened right after the failure.
+   *        The message then tells the client to retry, as the desktop usually becomes ready within a minute.
+   */
+  inline std::string_view probe_failure_message(bool desktop_inaccessible) {
+    using namespace std::literals;
+    if (desktop_inaccessible) {
+      return "The Windows desktop is not ready yet (the session is still signing in or is locked). Please try again in a few seconds."sv;
+    }
+    return "Failed to initialize video capture/encoding. Is a display connected and turned on?"sv;
   }
 
 }  // namespace platf

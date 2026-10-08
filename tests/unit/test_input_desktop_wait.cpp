@@ -6,6 +6,7 @@
  */
 #include "../tests_common.h"
 
+#include <src/config.h>
 #include <src/input_desktop_wait.h>
 
 #include <vector>
@@ -163,6 +164,76 @@ TEST(InputDesktopWait, CancelledBeforeStartNeverProbes) {
   auto r = w.run(180s);
   EXPECT_EQ(r.outcome, input_desktop_wait_outcome_e::cancelled);
   EXPECT_EQ(w.probe_calls, 0u);
+}
+
+namespace {
+  using platf::input_desktop_wait_budget;
+  using platf::input_desktop_wait_context_e;
+
+  // What the Moonlight client enforces (moonlight-qt app/backend/nvhttp.cpp:15-18).
+  constexpr auto client_serverinfo_timeout = 5s;
+  constexpr auto client_launch_timeout = 120s;
+}  // namespace
+
+TEST(InputDesktopWaitPolicy, EachCallSiteGetsItsOwnBudget) {
+  EXPECT_EQ(input_desktop_wait_budget(input_desktop_wait_context_e::none, 180s, 3s), 0s) << "startup probes never wait";
+  EXPECT_EQ(input_desktop_wait_budget(input_desktop_wait_context_e::request, 180s, 3s), 3s) << "HTTP handlers get the short cap";
+  EXPECT_EQ(input_desktop_wait_budget(input_desktop_wait_context_e::capture, 180s, 3s), 180s) << "the capture thread gets the full wait";
+}
+
+TEST(InputDesktopWaitPolicy, ZeroOptionsTurnWaitsOff) {
+  EXPECT_EQ(input_desktop_wait_budget(input_desktop_wait_context_e::request, 180s, 0s), 0s);
+  EXPECT_EQ(input_desktop_wait_budget(input_desktop_wait_context_e::request, 0s, 3s), 0s) << "the full timeout at 0 disables every wait";
+  EXPECT_EQ(input_desktop_wait_budget(input_desktop_wait_context_e::capture, 0s, 3s), 0s);
+  EXPECT_EQ(input_desktop_wait_budget(input_desktop_wait_context_e::request, -5s, 3s), 0s);
+}
+
+TEST(InputDesktopWaitPolicy, RequestCapNeverExceedsTheFullTimeout) {
+  EXPECT_EQ(input_desktop_wait_budget(input_desktop_wait_context_e::request, 2s, 30s), 2s);
+}
+
+TEST(InputDesktopWaitPolicy, DefaultRequestCapFitsInsideTheClientTimeouts) {
+  const auto cap = std::chrono::seconds {config::video.input_desktop_wait_request_timeout};
+  EXPECT_GT(cap, 0s);
+  EXPECT_LT(cap, client_serverinfo_timeout) << "the single-threaded HTTPS server must not starve the client's serverinfo polls";
+  EXPECT_LT(cap, client_launch_timeout);
+  EXPECT_EQ(config::video.input_desktop_wait_timeout, 180);
+}
+
+TEST(InputDesktopWaitPolicy, RequestThreadGivesUpAtTheCapAndTheClientRetrySucceeds) {
+  const auto cap = input_desktop_wait_budget(input_desktop_wait_context_e::request, 180s, 3s);
+  fake_world_t w;
+  w.open_at = 30s;  // the shell needs 30 s
+  auto first = w.run(cap);
+  EXPECT_EQ(first.outcome, input_desktop_wait_outcome_e::timed_out);
+  EXPECT_EQ(first.waited, 3s) << "the handler must hand back its 503 after exactly the cap";
+
+  // The client retries after the desktop is up: nothing is left over from the first attempt.
+  w.t = 31s;
+  w.slices.clear();
+  auto retry = w.run(cap);
+  EXPECT_EQ(retry.outcome, input_desktop_wait_outcome_e::ready_immediately);
+  EXPECT_TRUE(w.slices.empty());
+}
+
+TEST(InputDesktopWaitPolicy, QuickDesktopFlapIsAbsorbedByTheRequestCap) {
+  const auto cap = input_desktop_wait_budget(input_desktop_wait_context_e::request, 180s, 3s);
+  fake_world_t w;
+  w.open_at = 1500ms;
+  EXPECT_EQ(w.run(cap).outcome, input_desktop_wait_outcome_e::ready_after_wait);
+}
+
+TEST(InputDesktopWaitPolicy, CaptureThreadOutlastsTheShellStartup) {
+  const auto budget = input_desktop_wait_budget(input_desktop_wait_context_e::capture, 180s, 3s);
+  fake_world_t w;
+  w.open_at = 95s;
+  EXPECT_EQ(w.run(budget).outcome, input_desktop_wait_outcome_e::ready_after_wait);
+}
+
+TEST(InputDesktopWaitPolicy, RetryMessageOnlyWhenTheDesktopIsTheCause) {
+  EXPECT_NE(platf::probe_failure_message(true).find("try again"), std::string_view::npos);
+  EXPECT_EQ(platf::probe_failure_message(false).find("try again"), std::string_view::npos);
+  EXPECT_NE(platf::probe_failure_message(false).find("Is a display connected"), std::string_view::npos) << "the old message must stay for other causes";
 }
 
 #ifdef _WIN32

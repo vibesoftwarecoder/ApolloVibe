@@ -1270,7 +1270,8 @@ namespace nvhttp {
       // Still probe encoders once, if input only session is launched first
       // But we're ignoring if it's successful or not
       if (no_active_sessions && !proc::proc.virtual_display) {
-        video::probe_encoders();
+        // The result is ignored and there is no video, so waiting for a desktop would only delay the launch.
+        video::probe_encoders(platf::input_desktop_wait_context_e::none);
         if (current_appid == 0) {
           proc::proc.launch_input_only();
         }
@@ -1295,7 +1296,7 @@ namespace nvhttp {
           if (video::probe_encoders()) {
             tree.put("root.resume", 0);
             tree.put("root.<xmlattr>.status_code", 503);
-            tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
+            tree.put("root.<xmlattr>.status_message", std::string {video::probe_failure_message()});
 
             return;
           }
@@ -1325,7 +1326,7 @@ namespace nvhttp {
           tree.put(
             "root.<xmlattr>.status_message",
             err == 503
-            ? "Failed to initialize video capture/encoding. Is a display connected and turned on?"
+            ? std::string {video::probe_failure_message()}
             : "Failed to start the specified application");
           tree.put("root.gamesession", 0);
 
@@ -1428,7 +1429,7 @@ namespace nvhttp {
       if (video::probe_encoders()) {
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 503);
-        tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
+        tree.put("root.<xmlattr>.status_message", std::string {video::probe_failure_message()});
 
         return;
       }

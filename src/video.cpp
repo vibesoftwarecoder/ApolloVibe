@@ -1087,17 +1087,23 @@ namespace video {
   };
 
   /**
-   * @brief Before the first display is created, wait for the input desktop to become accessible.
+   * @brief Before a display is created, wait for the input desktop to become accessible.
    * @details A session that was just created shows the Winlogon (secure) desktop first, and display
-   *          capture fails with ACCESS_DENIED until the user desktop appears. This is for the initial
-   *          capture start and the encoder probe only; mid-stream recovery (`reset_display`) is unchanged.
-   *          A timeout or cancellation is logged by the platform code and the caller carries on, so the
-   *          start fails exactly as it did before this wait existed.
+   *          capture fails with ACCESS_DENIED until the user desktop appears. This is for the encoder
+   *          probe and the initial capture start only; mid-stream recovery (`reset_display`) is
+   *          unchanged. How long the caller may wait depends on who it is (see
+   *          `platf::input_desktop_wait_budget`). A timeout or cancellation is logged by the platform
+   *          code and the caller carries on, so the start fails exactly as it did before.
+   * @param context Who is asking.
    * @param extra_cancel Another reason to give up waiting, besides shutdown.
    */
-  static void await_input_desktop_for_capture([[maybe_unused]] const std::function<bool()> &extra_cancel = {}) {
+  static void await_input_desktop_for_capture([[maybe_unused]] platf::input_desktop_wait_context_e context, [[maybe_unused]] const std::function<bool()> &extra_cancel = {}) {
 #ifdef _WIN32
-    const auto timeout = std::chrono::seconds {config::video.input_desktop_wait_timeout};
+    const auto timeout = platf::input_desktop_wait_budget(
+      context,
+      std::chrono::seconds {config::video.input_desktop_wait_timeout},
+      std::chrono::seconds {config::video.input_desktop_wait_request_timeout}
+    );
     if (timeout <= std::chrono::seconds::zero()) {
       return;
     }
@@ -1106,6 +1112,14 @@ namespace video {
     platf::await_input_desktop(timeout, [&]() {
       return shutdown_event->peek() || (extra_cancel && extra_cancel());
     });
+#endif
+  }
+
+  std::string_view probe_failure_message() {
+#ifdef _WIN32
+    return platf::probe_failure_message(!platf::input_desktop_accessible());
+#else
+    return platf::probe_failure_message(false);
 #endif
   }
 
@@ -1218,8 +1232,10 @@ namespace video {
     std::vector<std::string> display_names;
     int display_p = -1;
     std::shared_ptr<platf::display_t> disp;
-    await_input_desktop_for_capture([&]() {
-      return !capture_ctx_queue->running();
+    // This is the capture thread, not a request thread, so it may wait the full timeout. It stops
+    // waiting when the queue stops or the session that asked for this capture goes away.
+    await_input_desktop_for_capture(platf::input_desktop_wait_context_e::capture, [&]() {
+      return !capture_ctx_queue->running() || !capture_ctxs.front().images->running();
     });
     if (!proc::proc.display_name.empty()) {
       disp = platf::display(encoder.platform_formats->dev_type, proc::proc.display_name, capture_ctxs.front().config);
@@ -2758,7 +2774,7 @@ namespace video {
     return true;
   }
 
-  int probe_encoders(bool wait_for_input_desktop) {
+  int probe_encoders(platf::input_desktop_wait_context_e wait) {
     if (!allow_encoder_probing()) {
       // Error already logged
       return -1;
@@ -2772,10 +2788,8 @@ namespace video {
     }
 
     // A real probe is about to open displays. Wait once here, not once per encoder: if the wait
-    // ran out, every encoder in the list would otherwise wait out the full timeout again.
-    if (wait_for_input_desktop) {
-      await_input_desktop_for_capture();
-    }
+    // ran out, every encoder in the list would otherwise wait out the timeout again.
+    await_input_desktop_for_capture(wait);
 
     // Restart encoder selection
     auto previous_encoder = chosen_encoder;

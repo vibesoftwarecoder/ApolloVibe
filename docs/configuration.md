@@ -2452,15 +2452,18 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            How many seconds to wait for the input desktop to become accessible before video capture or the
-            encoder probe starts. In a session that was just created, Windows shows the logon (Winlogon, secure)
-            desktop first. A normal process is denied access to it (error 5, ACCESS_DENIED), so display capture
-            cannot start until the user desktop appears. This can take about 30 seconds, and much longer while a
-            lock screen or credential prompt is up. Without the wait, the capture fails once and is not retried.
-            The wait ends as soon as the desktop opens, so a normal start is not delayed. It does not apply to
-            recovery while a stream is running.
+            How many seconds the capture thread waits for the input desktop to become accessible before it
+            creates the first display. In a session that was just created, Windows shows the logon (Winlogon,
+            secure) desktop first. A normal process is denied access to it (error 5, ACCESS_DENIED), so display
+            capture cannot start until the user desktop appears. This can take about 30 seconds, and much longer
+            while a lock screen or credential prompt is up. Without the wait, the capture fails once and is not
+            retried.
+            The wait ends as soon as the desktop opens, so a normal start is not delayed, and it ends when the
+            session ends. It does not apply to recovery while a stream is running or to the startup encoder probe.
             If the wait runs out, the log says so and the start continues, which then fails as it did before.
-            A value of 0 turns the wait off.
+            A value of 0 turns every wait off, including [input_desktop_wait_request_timeout](#input_desktop_wait_request_timeout).
+            @note{Moonlight gives up on a stream that sends no video for 10 seconds, so a client may disconnect
+            before a long wait ends. Launch requests are covered by the shorter request wait below.}
             @note{Applies to Windows only.}
         </td>
     </tr>
@@ -2474,6 +2477,37 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             input_desktop_wait_timeout = 300
+            @endcode</td>
+    </tr>
+</table>
+
+### input_desktop_wait_request_timeout
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            How many seconds a launch or resume request waits for the input desktop to become accessible before
+            the encoder probe. If it is still not accessible, the host answers 503 with a message that asks the
+            client to retry, and the client's retry does the rest of the waiting.
+            Keep this short. The host handles one HTTPS request at a time, so while a request waits, the client's
+            serverinfo polls (5 second timeout in Moonlight) wait too. Launch and resume requests time out after
+            120 seconds in Moonlight, and Moonlight does not retry them by itself.
+            The value is never larger than [input_desktop_wait_timeout](#input_desktop_wait_timeout).
+            A value of 0 turns the wait off for requests.
+            @note{Applies to Windows only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            3
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            input_desktop_wait_request_timeout = 10
             @endcode</td>
     </tr>
 </table>
