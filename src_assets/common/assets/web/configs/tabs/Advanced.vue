@@ -66,6 +66,20 @@ const config = ref(props.config)
               default="false"
     ></Checkbox>
 
+    <!-- Input Desktop Wait Timeout -->
+    <div class="mb-3">
+      <label for="input_desktop_wait_timeout" class="form-label">{{ $t('config.input_desktop_wait_timeout') }}</label>
+      <input type="number" class="form-control" id="input_desktop_wait_timeout" placeholder="180" min="0" max="3600" v-model="config.input_desktop_wait_timeout" />
+      <div class="form-text">{{ $t('config.input_desktop_wait_timeout_desc') }}</div>
+    </div>
+
+    <!-- Input Desktop Wait Request Timeout -->
+    <div class="mb-3">
+      <label for="input_desktop_wait_request_timeout" class="form-label">{{ $t('config.input_desktop_wait_request_timeout') }}</label>
+      <input type="number" class="form-control" id="input_desktop_wait_request_timeout" placeholder="3" min="0" max="60" v-model="config.input_desktop_wait_request_timeout" />
+      <div class="form-text">{{ $t('config.input_desktop_wait_request_timeout_desc') }}</div>
+    </div>
+
     <!-- HEVC Support -->
     <div class="mb-3">
       <label for="hevc_mode" class="form-label">{{ $t('config.hevc_mode') }}</label>

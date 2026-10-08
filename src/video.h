@@ -6,6 +6,7 @@
 
 // local includes
 #include "input.h"
+#include "input_desktop_wait.h"
 #include "platform/common.h"
 #include "thread_safe.h"
 #include "video_colorspace.h"
@@ -361,7 +362,18 @@ namespace video {
    * ensure the best encoder is selected. Encoder availability can change
    * at runtime due to all sorts of things from driver updates to eGPUs.
    *
+   * @param wait On Windows, first wait for the input desktop to become accessible, as a freshly created
+   *        session shows the secure desktop first. `request` (the default) is for HTTP handlers and waits
+   *        at most `input_desktop_wait_request_timeout`. `none` is for the startup probes, which must not
+   *        hold up the web UI, and for probes whose result is ignored.
+   *
    * @warning This is only safe to call when there is no client actively streaming.
    */
-  int probe_encoders();
+  int probe_encoders(platf::input_desktop_wait_context_e wait = platf::input_desktop_wait_context_e::request);
+
+  /**
+   * @brief The 503 status message for a launch or resume refused because `probe_encoders()` failed.
+   * @details Tells the client to retry when the cause is an input desktop that is not accessible yet.
+   */
+  std::string_view probe_failure_message();
 }  // namespace video

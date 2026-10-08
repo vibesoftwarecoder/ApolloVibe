@@ -4,6 +4,10 @@
  */
 // standard includes
 #include <csignal>
+#include <functional>
+#include <future>
+#include <memory>
+#include <thread>
 #include <filesystem>
 #include <iomanip>
 #include <iterator>
@@ -49,6 +53,7 @@
 #include "nvprefs/nvprefs_interface.h"
 #include "src/entry_handler.h"
 #include "src/globals.h"
+#include "src/input_desktop_wait.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
@@ -257,22 +262,39 @@ namespace platf {
    */
   static thread_local HDESK _ownedInputDesktop = nullptr;
 
-  HDESK syncThreadDesktop() {
+  /**
+   * @brief Open the input desktop without logging.
+   * @param error Receives the Win32 error when this returns nullptr.
+   * @return The opened desktop, or nullptr.
+   */
+  static HDESK open_input_desktop(DWORD &error) {
     auto hDesk = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, FALSE, GENERIC_ALL);
+    error = hDesk ? ERROR_SUCCESS : GetLastError();
+    return hDesk;
+  }
+
+  HDESK syncThreadDesktop(DWORD *last_error) {
+    DWORD err = ERROR_SUCCESS;
+    auto hDesk = open_input_desktop(err);
     if (!hDesk) {
-      auto err = GetLastError();
       BOOST_LOG(error) << "Failed to Open Input Desktop [0x"sv << util::hex(err).to_string_view() << ']';
 
+      if (last_error) {
+        *last_error = err;
+      }
       return nullptr;
     }
 
     if (!SetThreadDesktop(hDesk)) {
-      auto err = GetLastError();
+      err = GetLastError();
       BOOST_LOG(error) << "Failed to sync desktop to thread [0x"sv << util::hex(err).to_string_view() << ']';
 
       // The assignment failed, so this handle is ours to release and the thread keeps whatever
       // desktop it had. Returning it would hand callers a handle to a desktop they are not on.
       CloseDesktop(hDesk);
+      if (last_error) {
+        *last_error = err;
+      }
       return nullptr;
     }
 
@@ -285,7 +307,189 @@ namespace platf {
     }
     _ownedInputDesktop = hDesk;
 
+    if (last_error) {
+      *last_error = ERROR_SUCCESS;
+    }
     return hDesk;
+  }
+
+  bool input_desktop_accessible(DWORD *last_error) {
+    DWORD err = ERROR_SUCCESS;
+    auto hDesk = open_input_desktop(err);
+    if (hDesk) {
+      CloseDesktop(hDesk);
+    }
+    if (last_error) {
+      *last_error = err;
+    }
+    return hDesk != nullptr;
+  }
+
+  namespace {
+    /**
+     * @brief Signals an event whenever the active desktop changes (EVENT_SYSTEM_DESKTOPSWITCH).
+     * @details SetWinEventHook with WINEVENT_OUTOFCONTEXT delivers through the message queue of the
+     *          thread that installed it, so the hook lives on its own thread with a message loop
+     *          rather than on a worker that never pumps messages. The hook only shortens the wait:
+     *          if it cannot be installed, or Windows never delivers the event to this desktop or
+     *          session, the caller's polling still finds the desktop.
+     */
+    class desktop_switch_signal_t {
+    public:
+      desktop_switch_signal_t():
+          signal_(CreateEventW(nullptr, FALSE, FALSE, nullptr)),
+          stop_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {
+        if (!signal_ || !stop_) {
+          return;
+        }
+        std::promise<bool> installed;
+        auto installed_future = installed.get_future();
+        thread_ = std::thread([this, p = std::move(installed)]() mutable {
+          run(std::move(p));
+        });
+        hook_installed_ = installed_future.get();
+      }
+
+      ~desktop_switch_signal_t() {
+        if (thread_.joinable()) {
+          SetEvent(stop_);
+          thread_.join();
+        }
+        if (signal_) {
+          CloseHandle(signal_);
+        }
+        if (stop_) {
+          CloseHandle(stop_);
+        }
+      }
+
+      desktop_switch_signal_t(const desktop_switch_signal_t &) = delete;
+      desktop_switch_signal_t &operator=(const desktop_switch_signal_t &) = delete;
+
+      [[nodiscard]] bool hook_installed() const {
+        return hook_installed_;
+      }
+
+      /**
+       * @brief Sleep up to `timeout`, or until a desktop switch is signalled.
+       * @return true if woken by a desktop switch.
+       */
+      bool wait(std::chrono::milliseconds timeout) const {
+        if (!signal_) {
+          std::this_thread::sleep_for(timeout);
+          return false;
+        }
+        return WaitForSingleObject(signal_, (DWORD) timeout.count()) == WAIT_OBJECT_0;
+      }
+
+    private:
+      // WinEvent callbacks carry no user data. The callback runs on the installing thread, so a
+      // thread-local pointer reaches the right instance even with several waiters at once.
+      static inline thread_local HANDLE tl_signal = nullptr;
+
+      static void CALLBACK on_win_event(HWINEVENTHOOK, DWORD event, HWND, LONG, LONG, DWORD, DWORD) {
+        if (event == EVENT_SYSTEM_DESKTOPSWITCH && tl_signal) {
+          SetEvent(tl_signal);
+        }
+      }
+
+      void run(std::promise<bool> installed) {
+        tl_signal = signal_;
+        auto hook = SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH, nullptr, on_win_event, 0, 0, WINEVENT_OUTOFCONTEXT);
+        installed.set_value(hook != nullptr);
+        if (!hook) {
+          return;
+        }
+
+        for (;;) {
+          auto r = MsgWaitForMultipleObjects(1, &stop_, FALSE, INFINITE, QS_ALLINPUT);
+          if (r == WAIT_OBJECT_0 || r == WAIT_FAILED) {
+            break;
+          }
+          MSG msg;
+          while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+          }
+        }
+
+        UnhookWinEvent(hook);
+        tl_signal = nullptr;
+      }
+
+      HANDLE signal_;
+      HANDLE stop_;
+      std::thread thread_;
+      bool hook_installed_ = false;
+    };
+  }  // namespace
+
+  bool desktop_switch_hook_available() {
+    desktop_switch_signal_t signal;
+    return signal.hook_installed();
+  }
+
+  input_desktop_wait_result_t await_input_desktop(std::chrono::milliseconds timeout, const std::function<bool()> &cancelled) {
+    using namespace std::chrono;
+
+    input_desktop_wait_options_t options;
+    options.timeout = timeout;
+
+    // Created on the first wait only, so a desktop that is already accessible never starts a thread.
+    std::unique_ptr<desktop_switch_signal_t> signal;
+    const auto t0 = steady_clock::now();
+
+    auto result = wait_for_input_desktop(
+      options,
+      [](unsigned long &err) {
+        DWORD e = ERROR_SUCCESS;
+        auto ok = input_desktop_accessible(&e);
+        err = e;
+        return ok;
+      },
+      [&](milliseconds slice) {
+        if (!signal) {
+          signal = std::make_unique<desktop_switch_signal_t>();
+          BOOST_LOG(info) << "Input desktop wait: "sv
+                          << (signal->hook_installed() ?
+                                "listening for desktop switches, polling as backstop"sv :
+                                "desktop switch hook unavailable, polling only"sv);
+        }
+        return signal->wait(slice);
+      },
+      cancelled,
+      [&]() {
+        return duration_cast<milliseconds>(steady_clock::now() - t0);
+      },
+      [&](unsigned long err) {
+        BOOST_LOG(warning) << "Input desktop is not accessible [0x"sv << util::hex((DWORD) err).to_string_view()
+                           << "], so display capture cannot start yet. The Winlogon (secure) desktop is probably still active"
+                              " (new session logging on, lock screen or credential prompt). Waiting up to "sv
+                           << duration_cast<seconds>(timeout).count() << " s for the user desktop"sv;
+      },
+      [&](milliseconds waited, unsigned long err) {
+        BOOST_LOG(info) << "Input desktop wait: still not accessible after "sv << duration_cast<seconds>(waited).count()
+                        << " s [0x"sv << util::hex((DWORD) err).to_string_view() << ']';
+      }
+    );
+
+    switch (result.outcome) {
+      case input_desktop_wait_outcome_e::ready_after_wait:
+        BOOST_LOG(info) << "Input desktop became accessible after "sv << result.waited.count() << " ms ("sv << result.probes
+                        << " probes, "sv << result.signal_wakeups << " desktop-switch wakeups)"sv;
+        break;
+      case input_desktop_wait_outcome_e::timed_out:
+        BOOST_LOG(error) << "Input desktop still not accessible after "sv << result.waited.count() << " ms ["sv
+                         << util::hex((DWORD) result.last_error).to_string_view() << "]. Giving up the wait; capture will fail"sv;
+        break;
+      case input_desktop_wait_outcome_e::cancelled:
+        BOOST_LOG(info) << "Input desktop wait cancelled after "sv << result.waited.count() << " ms"sv;
+        break;
+      default:
+        break;
+    }
+
+    return result;
   }
 
   void print_status(const std::string_view &prefix, HRESULT status) {
