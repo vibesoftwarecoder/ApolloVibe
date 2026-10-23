@@ -61,6 +61,12 @@ namespace crypto {
     server_cmd       = _operation << 4,  // Allow execute server cmd
     _all_opeiations  = clipboard_set | clipboard_read | file_upload | file_dwnload | server_cmd,
 
+    // Opt-in permissions. These are deliberately NOT part of `_all_opeiations`, `_all` or `_default`:
+    // the first client to pair receives `_all`, and a state file without a `perm` value loads as `_all`,
+    // so a bit inside `_all` would be granted to those clients without anyone choosing it.
+    usb_forward      = _operation << 5,  // Allow forwarding a USB device from the client to the host
+    _all_opt_in      = usb_forward,
+
     _action          = _operation << 8,  // Action permission group
     list             = _action << 0,     // Allow list apps
     view             = _action << 1,     // Allow view streams
@@ -70,7 +76,8 @@ namespace crypto {
 
     _default         = view | list,      // Default permissions for new clients
     _no              = 0,                // No permissions are granted
-    _all             = _all_inputs | _all_opeiations | _all_actions, // All current permissions
+    _all             = _all_inputs | _all_opeiations | _all_actions, // All current permissions, except the opt-in ones
+    _storable        = _all | _all_opt_in,  // Every defined bit: the mask for values read from disk or the web API
   };
 
   inline constexpr PERM
@@ -81,6 +88,11 @@ namespace crypto {
   inline constexpr bool
   operator!(PERM p) {
     return static_cast<uint32_t>(p) == 0;
+  }
+
+  inline constexpr PERM
+  operator|(PERM x, PERM y) {
+    return static_cast<PERM>(static_cast<uint32_t>(x) | static_cast<uint32_t>(y));
   }
 
   struct command_entry_t {

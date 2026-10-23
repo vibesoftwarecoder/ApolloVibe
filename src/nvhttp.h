@@ -6,7 +6,9 @@
 #pragma once
 
 // standard includes
+#include <optional>
 #include <string>
+#include <string_view>
 #include <chrono>
 #include <list>
 
@@ -17,6 +19,7 @@
 
 // local includes
 #include "crypto.h"
+#include "remote_usb/client_authorization.h"
 #include "rtsp.h"
 #include "thread_safe.h"
 
@@ -51,6 +54,11 @@ namespace nvhttp {
    * @brief The HTTPS port, as a difference from the config port.
    */
   constexpr auto PORT_HTTPS = -5;
+
+  /**
+   * @brief The USB forwarding tunnel port, as a difference from the config port, when `usb_forwarding_port` is 0.
+   */
+  constexpr auto USB_FORWARDING_PORT_OFFSET = 7;
 
   constexpr auto OTP_EXPIRE_DURATION = 180s;
 
@@ -284,11 +292,73 @@ namespace nvhttp {
   );
 
   /**
-   * @brief Build the body of the `GET /api/v1/usb-forwarding` capability reply.
-   * @details Version 1 of the contract: `version`, `enabled`, `available` and `reason`. `port` and `token`
-   *          are only sent when forwarding is available, so a disabled host never hands out credentials.
-   *          USB forwarding is not implemented yet, so this always reports it as disabled.
+   * @brief What one client is told about USB forwarding. Maps one-to-one to the `reason` field.
+   */
+  enum class usb_forwarding_state {
+    disabled,     ///< The host owner has not turned USB forwarding on.
+    unavailable,  ///< On, but this client cannot use it right now (no tunnel service, or no active stream).
+    forbidden,    ///< On, but this client lacks PERM::usb_forward.
+    ready,        ///< The client may open the tunnel.
+  };
+
+  /**
+   * @brief Everything the capability decision depends on.
+   */
+  struct usb_forwarding_inputs {
+    bool enabled {false};            ///< config::nvhttp.usb_forwarding_enabled
+    bool service_running {false};    ///< The tunnel listener is up.
+    crypto::PERM perm {crypto::PERM::_no};  ///< Permissions of the calling client.
+    bool require_stream {true};      ///< config::nvhttp.usb_forwarding_require_stream
+    bool has_active_stream {false};  ///< The calling client has a launch/stream session now.
+  };
+
+  /**
+   * @brief Whether a client that presented a valid certificate may use the tunnel right now.
+   * @details Shared by the capability reply and the tunnel handshake so the two cannot disagree.
+   *          The order is: not enabled, no running service, no permission, no stream.
+   */
+  usb_forwarding_state usb_forwarding_decide(const usb_forwarding_inputs &inputs);
+
+  /**
+   * @brief Build the body of the `GET /api/v1/usb-forwarding` capability reply (contract version 1).
+   * @details `version`, `enabled`, `available` and `reason` are always present. `port` and `token` are present
+   *          only for `usb_forwarding_state::ready`, so a host that is off, or a client that is not allowed,
+   *          never receives credentials. A ready state with an unusable port or a token that is not 64 hex
+   *          digits is reported as unavailable instead of being sent.
+   * @param state The decision for this client.
+   * @param port The tunnel port.
+   * @param token The tunnel token, 64 hex digits.
    * @return The JSON body as a string.
    */
-  std::string usb_forwarding_capability_json();
+  std::string usb_forwarding_capability_json(usb_forwarding_state state, std::uint16_t port, std::string_view token);
+
+  /**
+   * @brief Pick the tunnel port.
+   * @param configured `usb_forwarding_port`: 0 for the main port + 7, otherwise 1024-65535.
+   * @param main_port The main (config) port that the other ports are offsets of.
+   * @return The port, or nothing when it is out of range or collides with a port this host uses itself
+   *         (offsets -5, 0, +1, +9..+12 and the RTSP port).
+   */
+  std::optional<std::uint16_t> usb_forwarding_resolve_port(int configured, std::uint16_t main_port);
+
+  /**
+   * @brief The tunnel's own decision about a client it has already authenticated by certificate.
+   * @details Uses the same rules as the capability reply, with the service known to be running.
+   * @param perm The permissions of the client that owns the certificate.
+   * @param require_stream Whether `usb_forwarding_require_stream` is on.
+   * @param has_active_stream Whether the client has a launch/stream session now.
+   */
+  remote_usb::client_authorization usb_forwarding_client_authorization(crypto::PERM perm, bool require_stream, bool has_active_stream);
+
+  /**
+   * @brief Cut every USB forward that belongs to this paired client (by uuid), at once.
+   * @details Called when a client is unpaired or loses its permissions. Safe from any thread, a no-op when the
+   *          tunnel is not running. The tunnel also authorizes every forward again on a timer, as a backstop.
+   */
+  void usb_forwarding_revoke_client(const std::string &uuid);
+
+  /**
+   * @brief The per-process tunnel token: 32 random bytes as 64 lower-case hex digits, created on first use.
+   */
+  const std::string &usb_forwarding_token();
 }  // namespace nvhttp

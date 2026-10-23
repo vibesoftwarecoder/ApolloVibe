@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -848,6 +849,23 @@ namespace config {
     }
   }
 
+  int parse_usb_forwarding_port(std::string_view text) {
+    // Allow the same surrounding quotes the other numeric keys accept.
+    if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
+      text = text.substr(1, text.size() - 2);
+    }
+
+    int value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value, 10);
+    const bool numeric = error == std::errc {} && end == text.data() + text.size();
+    if (numeric && (value == 0 || (value >= 1024 && value <= 65535))) {
+      return value;
+    }
+
+    BOOST_LOG(warning) << "Config option [usb_forwarding_port] must be 0 or 1024-65535, ignoring ["sv << text << "] and using the default"sv;
+    return 0;
+  }
+
   void int_between_f(std::unordered_map<std::string, std::string> &vars, const std::string &name, int &input, const std::pair<int, int> &range) {
     int temp = input;
 
@@ -1229,6 +1247,9 @@ namespace config {
 
     string_f(vars, "external_ip", nvhttp.external_ip);
     string_f(vars, "wol_mac", nvhttp.wol_mac);
+    bool_f(vars, "usb_forwarding_enabled", nvhttp.usb_forwarding_enabled);
+    generic_f(vars, "usb_forwarding_port", nvhttp.usb_forwarding_port, parse_usb_forwarding_port);
+    bool_f(vars, "usb_forwarding_require_stream", nvhttp.usb_forwarding_require_stream);
     list_prep_cmd_f(vars, "global_prep_cmd", config::sunshine.prep_cmds);
     list_prep_cmd_f(vars, "global_state_cmd", config::sunshine.state_cmds);
     list_server_cmd_f(vars, "server_cmd", config::sunshine.server_cmds);

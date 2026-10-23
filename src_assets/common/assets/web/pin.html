@@ -102,6 +102,7 @@
                 <button v-for="perm in group.permissions" class="my-1 btn btn-sm" :disabled="isSuppressed(client.editPerm, perm.name, perm.suppressed_by)" :class="(isSuppressed(client.editPerm, perm.name, perm.suppressed_by) || checkPermission(client.editPerm, perm.name)) ? 'btn-success' : 'btn-outline-secondary'" @click="togglePermission(client, perm.name)">
                   {{ $t(`permissions.${perm.name}`) }}
                 </button>
+                <div v-if="group.warning" class="form-text text-warning mx-2" style="max-width: 16rem;">{{ $t(group.warning) }}</div>
               </div>
             </div>
 
@@ -289,6 +290,8 @@
     file_upload: 0x00040000,
     file_dwnload: 0x00080000,
     server_cmd: 0x00100000,
+    // Opt-in: deliberately not part of _all_operations, _default or _all, so a new client never has it.
+    usb_forward: 0x00200000,
     _all_operations: 0x001F0000,
 
     // Action permission group
@@ -301,7 +304,9 @@
     // Special permissions
     _default: 0x03000000,
     _no: 0x00000000,
-    _all: 0x071F1F00
+    _all: 0x071F1F00,
+    // Every defined bit, including the opt-in ones: what a saved value is masked with so it is not lost.
+    _storable: 0x073F1F00
   };
 
   const permissionGroups = [
@@ -346,6 +351,12 @@
         suppressed_by: []
       }, {
         name: 'input_kbd',
+        suppressed_by: []
+      }
+    ] },
+    { name: 'USB', warning: 'permissions.usb_forward_warning', permissions: [
+      {
+        name: 'usb_forward',
         suppressed_by: []
       }
     ] },
@@ -559,7 +570,7 @@
           allow_client_commands: client.editAllowClientCommands,
           enable_legacy_ordering: client.editEnableLegacyOrdering,
           always_use_virtual_display: client.editAlwaysUseVirtualDisplay,
-          perm: client.editPerm & permissionMapping._all,
+          perm: client.editPerm & permissionMapping._storable,
           do: client.edit_do.reduce((filtered, {cmd: _cmd, elevated}) => {
             const cmd = _cmd.trim()
             if (cmd) {

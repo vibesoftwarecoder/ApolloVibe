@@ -2012,6 +2012,91 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### usb_forwarding_enabled
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Let a paired client share one of its USB devices with this host through a TLS tunnel. The tunnel only
+            starts when this is enabled, and a client must also have the USB forwarding permission before it is
+            offered. The usbip-win2 driver must be installed on this host (Windows only). Takes effect after a restart.
+            Each forward is checked again every few seconds, and at once when a client is unpaired or loses the
+            permission, so a device is detached soon after access is withdrawn. Connections that have not finished
+            TLS get a short deadline and a small, per-address budget, separate from working forwards.
+            @warning{Allowing a client the USB forwarding permission is equivalent to giving it physical USB access
+            to this host. A forwarded keyboard or mouse bypasses the input permissions, and a forwarded drive is
+            visible to every Windows session on the machine. The usbip-win2 driver is machine-wide, and any local
+            user can detach devices through it.}
+            @note{The local attach connection is only accepted from the System process (the usbip-win2 kernel client). That means
+            "a kernel-mode TCP client", not specifically usbip-win2: a kernel component that connects first can make
+            an attach fail. The listener does not use SO_REUSEADDR, so a second program cannot share the port; it
+            does not use SO_EXCLUSIVEADDRUSE either, because whether TIME_WAIT connections would then block a
+            restart was not verified.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            usb_forwarding_enabled = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### usb_forwarding_port
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The TCP port of the USB forwarding tunnel. 0 uses the main port + 7. Otherwise the port must be between
+            1024 and 65535, and must not be one of the ports this host already uses. A value outside that range is
+            ignored with a warning. If the port is busy, USB forwarding stays off.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            usb_forwarding_port = 48100
+            @endcode</td>
+    </tr>
+</table>
+
+### usb_forwarding_require_stream
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Only let a client forward a USB device while it has an active stream session.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            usb_forwarding_require_stream = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### lan_encryption_mode
 
 <table>

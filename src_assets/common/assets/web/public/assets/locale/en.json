@@ -488,7 +488,13 @@
     "wan_encryption_mode_2": "Required for all clients",
     "wan_encryption_mode_desc": "This determines when encryption will be used when streaming over the Internet. Encryption can reduce streaming performance, particularly on less powerful hosts and clients.",
     "wol_mac": "Wake-on-LAN MAC Address",
-    "wol_mac_desc": "MAC address reported to paired clients for Wake-on-LAN. Leave empty to use the network adapter that serves the connection. Set this only if that adapter cannot wake the machine and a different one handles Wake-on-LAN, otherwise clients will send wake packets to a card that ignores them."
+    "wol_mac_desc": "MAC address reported to paired clients for Wake-on-LAN. Leave empty to use the network adapter that serves the connection. Set this only if that adapter cannot wake the machine and a different one handles Wake-on-LAN, otherwise clients will send wake packets to a card that ignores them.",
+    "usb_forwarding_enabled": "USB Forwarding",
+    "usb_forwarding_enabled_desc": "Let a paired client share one of its USB devices with this host. Each client also needs the USB forwarding permission, and the usbip-win2 driver must be installed on this host. Takes effect after a restart. Equivalent to physical USB access to this host.",
+    "usb_forwarding_port": "USB Forwarding Port",
+    "usb_forwarding_port_desc": "TCP port of the USB forwarding tunnel. 0 uses the main port + 7. Otherwise use 1024-65535; ports this host already uses are refused.",
+    "usb_forwarding_require_stream": "USB Forwarding Needs an Active Stream",
+    "usb_forwarding_require_stream_desc": "Only let a client forward a USB device while it is streaming."
   },
   "login": {
     "save_password": "Remember Password"
@@ -538,7 +544,9 @@
     "server_cmd": "Server Command",
     "list": "List Apps",
     "view": "View Streams",
-    "launch": "Launch Apps"
+    "launch": "Launch Apps",
+    "usb_forward": "USB Device Forwarding",
+    "usb_forward_warning": "Equivalent to plugging a USB device into this host. A forwarded keyboard or mouse bypasses the input permissions above, and a forwarded drive is visible to every Windows session on this machine. Off by default; also needs USB forwarding turned on in the Network settings."
   },
   "pin": {
     "allow_client_commands": "Allow client commands",
