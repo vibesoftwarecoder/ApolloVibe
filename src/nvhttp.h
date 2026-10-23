@@ -282,4 +282,13 @@ namespace nvhttp {
     const bool allow_client_commands,
     const bool always_use_virtual_display
   );
+
+  /**
+   * @brief Build the body of the `GET /api/v1/usb-forwarding` capability reply.
+   * @details Version 1 of the contract: `version`, `enabled`, `available` and `reason`. `port` and `token`
+   *          are only sent when forwarding is available, so a disabled host never hands out credentials.
+   *          USB forwarding is not implemented yet, so this always reports it as disabled.
+   * @return The JSON body as a string.
+   */
+  std::string usb_forwarding_capability_json();
 }  // namespace nvhttp

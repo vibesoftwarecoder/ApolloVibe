@@ -1532,6 +1532,26 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  std::string usb_forwarding_capability_json() {
+    nlohmann::json body {
+      {"version", 1},
+      {"enabled", false},
+      {"available", false},
+      {"reason", "disabled"},
+    };
+    return body.dump();
+  }
+
+  void usbForwardingCapability(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    // The HTTPS server has already rejected any client that is not paired, so there is no permission to check yet.
+    SimpleWeb::CaseInsensitiveMultimap headers;
+    headers.emplace("Content-Type", "application/json");
+    headers.emplace("Cache-Control", "no-store");
+    response->write(SimpleWeb::StatusCode::success_ok, usb_forwarding_capability_json(), headers);
+  }
+
   void getClipboard(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
@@ -1736,6 +1756,7 @@ namespace nvhttp {
     };
     https_server.resource["^/cancel$"]["GET"] = cancel;
     https_server.resource["^/actions/clipboard$"]["GET"] = getClipboard;
+    https_server.resource["^/api/v1/usb-forwarding$"]["GET"] = usbForwardingCapability;
     https_server.resource["^/actions/clipboard$"]["POST"] = setClipboard;
 
     https_server.config.reuse_address = true;
