@@ -9,6 +9,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -200,6 +201,16 @@ namespace config {
     // wrong when the streaming NIC cannot wake the machine and a second NIC
     // handles wake duty. Set this to the wake-capable NIC's MAC in that case.
     std::string wol_mac;
+
+    // USB forwarding: a paired client shares one of its USB devices with this host through a TLS tunnel.
+    // Off unless the host owner turns it on, and each client also needs the usb_forward permission.
+    bool usb_forwarding_enabled {false};
+
+    // TCP port of the tunnel. 0 means the main port + 7; otherwise 1024-65535.
+    int usb_forwarding_port {0};
+
+    // Only let a client forward a device while it has an active stream session.
+    bool usb_forwarding_require_stream {true};
   };
 
   struct input_t {
@@ -309,5 +320,11 @@ namespace config {
   extern sunshine_t sunshine;
 
   int parse(int argc, char *argv[]);
+
+  /**
+   * @brief Parse the `usb_forwarding_port` option.
+   * @return The port when it is 0 (automatic) or 1024-65535; otherwise logs a warning and returns 0.
+   */
+  int parse_usb_forwarding_port(std::string_view text);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
 }  // namespace config

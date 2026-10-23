@@ -67,6 +67,14 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utils.cpp"
+        "${CMAKE_SOURCE_DIR}/src/remote_usb/client_authorization.h"
+        "${CMAKE_SOURCE_DIR}/src/remote_usb/remote_usb_host_controller.cpp"
+        "${CMAKE_SOURCE_DIR}/src/remote_usb/remote_usb_host_controller.h"
+        "${CMAKE_SOURCE_DIR}/src/remote_usb/reverse_tunnel_service.cpp"
+        "${CMAKE_SOURCE_DIR}/src/remote_usb/reverse_tunnel_service.h"
+        "${CMAKE_SOURCE_DIR}/src/remote_usb/usbip_endpoint.h"
+        "${CMAKE_SOURCE_DIR}/src/remote_usb/usbip_executable.cpp"
+        "${CMAKE_SOURCE_DIR}/src/remote_usb/usbip_executable.h"
         "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda-ioctl.h"
         "${CMAKE_SOURCE_DIR}/third-party/sudovda/sudovda.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
@@ -94,6 +102,7 @@ list(PREPEND PLATFORM_LIBRARIES
         libwinpthread.a
         minhook::minhook
         ntdll
+        ole32
         setupapi
         shlwapi
         synchronization.lib

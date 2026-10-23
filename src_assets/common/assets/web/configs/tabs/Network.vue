@@ -130,6 +130,27 @@ const effectivePort = computed(() => +config.value?.port ?? defaultMoonlightPort
       <div class="form-text">{{ $t('config.wol_mac_desc') }}</div>
     </div>
 
+    <!-- USB forwarding -->
+    <Checkbox class="mb-3"
+              id="usb_forwarding_enabled"
+              locale-prefix="config"
+              v-model="config.usb_forwarding_enabled"
+              default="false"
+    ></Checkbox>
+
+    <div class="mb-3">
+      <label for="usb_forwarding_port" class="form-label">{{ $t('config.usb_forwarding_port') }}</label>
+      <input type="text" class="form-control" id="usb_forwarding_port" placeholder="0" v-model="config.usb_forwarding_port" />
+      <div class="form-text">{{ $t('config.usb_forwarding_port_desc') }}</div>
+    </div>
+
+    <Checkbox class="mb-3"
+              id="usb_forwarding_require_stream"
+              locale-prefix="config"
+              v-model="config.usb_forwarding_require_stream"
+              default="true"
+    ></Checkbox>
+
     <!-- LAN Encryption Mode -->
     <div class="mb-3">
       <label for="lan_encryption_mode" class="form-label">{{ $t('config.lan_encryption_mode') }}</label>
