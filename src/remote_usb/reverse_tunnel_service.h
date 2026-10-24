@@ -31,10 +31,12 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <openssl/ssl.h>
 
 #include "client_authorization.h"
+#include "forward_info.h"
 #include "remote_usb_host_controller.h"
 
 namespace remote_usb {
@@ -125,6 +127,22 @@ namespace remote_usb {
     /** Detach and close every forward of this client at once; any thread. */
     void
     revoke(const std::string &client_id);
+
+    /**
+     * Like revoke(), but waits (at most @p timeout) for the service thread and returns how many
+     * forwards it cut. Nothing when the service is not running or does not answer in time (the
+     * revoke is then still carried out). Any thread except the service's own.
+     */
+    std::optional<std::size_t>
+    revoke_counted(const std::string &client_id, std::chrono::milliseconds timeout = std::chrono::seconds(2));
+
+    /**
+     * The forwards that passed the token and the authorizer and have not ended. Waits at most
+     * @p timeout for the service thread; nothing when it is not running or does not answer.
+     * Any thread except the service's own.
+     */
+    std::optional<std::vector<forward_info>>
+    forwards(std::chrono::milliseconds timeout = std::chrono::seconds(2)) const;
 
     /** True between a successful start() and stop(). */
     bool

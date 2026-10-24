@@ -490,11 +490,13 @@
     "wol_mac": "Wake-on-LAN MAC Address",
     "wol_mac_desc": "MAC address reported to paired clients for Wake-on-LAN. Leave empty to use the network adapter that serves the connection. Set this only if that adapter cannot wake the machine and a different one handles Wake-on-LAN, otherwise clients will send wake packets to a card that ignores them.",
     "usb_forwarding_enabled": "USB Forwarding",
-    "usb_forwarding_enabled_desc": "Let a paired client share one of its USB devices with this host. Each client also needs the USB forwarding permission, and the usbip-win2 driver must be installed on this host. Takes effect after a restart. Equivalent to physical USB access to this host.",
+    "usb_forwarding_enabled_desc": "Let a paired client share one of its USB devices with this host. Each client also needs the USB forwarding permission, and the usbip-win2 driver must be installed on this host. This is the setting at startup and takes effect after a restart. With the control pipe enabled, a local administrator can also start or stop it while Apollo runs, until the next restart. Equivalent to physical USB access to this host.",
     "usb_forwarding_port": "USB Forwarding Port",
     "usb_forwarding_port_desc": "TCP port of the USB forwarding tunnel. 0 uses the main port + 7. Otherwise use 1024-65535; ports this host already uses are refused.",
     "usb_forwarding_require_stream": "USB Forwarding Needs an Active Stream",
-    "usb_forwarding_require_stream_desc": "Only let a client forward a USB device while it is streaming."
+    "usb_forwarding_require_stream_desc": "Only let a client forward a USB device while it is streaming.",
+    "usb_forwarding_control": "USB Forwarding Control Pipe",
+    "usb_forwarding_control_desc": "Create a Windows named pipe that only SYSTEM and Administrators can open, so local management software can show and switch USB forwarding without restarting Apollo. There is no network port and no secret. Apollo creates the pipe only when it can own it as SYSTEM or Administrators, which the console Apollo normally can; an Apollo running as a standard user skips it. Takes effect after a restart."
   },
   "login": {
     "save_password": "Remember Password"

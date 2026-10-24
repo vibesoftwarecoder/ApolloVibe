@@ -151,6 +151,13 @@ const effectivePort = computed(() => +config.value?.port ?? defaultMoonlightPort
               default="true"
     ></Checkbox>
 
+    <Checkbox class="mb-3"
+              id="usb_forwarding_control"
+              locale-prefix="config"
+              v-model="config.usb_forwarding_control"
+              default="false"
+    ></Checkbox>
+
     <!-- LAN Encryption Mode -->
     <div class="mb-3">
       <label for="lan_encryption_mode" class="form-label">{{ $t('config.lan_encryption_mode') }}</label>

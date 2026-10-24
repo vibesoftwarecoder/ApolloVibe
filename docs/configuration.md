@@ -2018,9 +2018,11 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Let a paired client share one of its USB devices with this host through a TLS tunnel. The tunnel only
-            starts when this is enabled, and a client must also have the USB forwarding permission before it is
-            offered. The usbip-win2 driver must be installed on this host (Windows only). Takes effect after a restart.
+            Let a paired client share one of its USB devices with this host through a TLS tunnel. This is the setting at
+            startup. The tunnel only runs when it is on, and a client must also have the USB forwarding permission
+            before it is offered. The usbip-win2 driver must be installed on this host (Windows only). Changing it
+            takes effect after a restart. With `usb_forwarding_control` enabled, a local administrator can also start
+            or stop the tunnel while Apollo runs; that change lasts only until Apollo restarts.
             Each forward is checked again every few seconds, and at once when a client is unpaired or loses the
             permission, so a device is detached soon after access is withdrawn. Connections that have not finished
             TLS get a short deadline and a small, per-address budget, separate from working forwards.
@@ -2093,6 +2095,91 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>Example</td>
         <td colspan="2">@code{}
             usb_forwarding_require_stream = disabled
+            @endcode</td>
+    </tr>
+</table>
+
+### usb_forwarding_control
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Create a Windows named pipe that lets local management software show and control USB forwarding while
+            Apollo runs. The pipe is named `\\.\pipe\ApolloVibe-usb-control-<main port>`, so several Apollo
+            instances on one machine do not collide. There is no network port and no secret: the pipe's access
+            list is the only authentication of the client. Only SYSTEM and BUILTIN\Administrators can open it,
+            remote clients are refused, and a standard user cannot open it. Takes effect after a restart. Windows only.
+
+            Apollo creates the pipe only when it can make SYSTEM or Administrators its owner. The console Apollo
+            normally runs as SYSTEM, so this costs nothing there. An Apollo that runs as a standard user (for
+            example a seat's Apollo) does not create the pipe at all: it logs one line and carries on without it.
+            Creation also fails closed if the pipe name is already in use, and Apollo checks the owner and the access
+            list of every live pipe instance; an instance that does not match is closed and never served. If an
+            instance cannot be created, Apollo keeps the one it has and retries with a growing pause. With this
+            disabled there is no pipe and no thread.
+
+            @warning{The access list protects the server from the wrong client. It does not protect a client from
+            the wrong server: while Apollo is stopped, any local user can create a pipe with this name. Every
+            client, whether it runs as SYSTEM or as an administrator, must do all of this before it sends anything:
+            (1) pass SECURITY_SQOS_PRESENT and SECURITY_IDENTIFICATION to CreateFile as part of the open (they are
+            flags of the open call, not a later step), so the server can never impersonate the client;
+            (2) read the pipe's owner with GetSecurityInfo and require S-1-5-18 (SYSTEM) or S-1-5-32-544
+            (Administrators); (3) require GetNamedPipeServerProcessId to equal the process id of the Apollo it
+            expects. That is the process that owns the listening TCP port of the configured Apollo main port,
+            looked up with GetExtendedTcpTable (listener table with owner process ids) again for each connection.
+            A process id can be reused after Apollo exits; the window is narrow and the owner check covers it. The
+            client must refuse to talk when any check fails. Every read and write must be bounded, with
+            FILE_FLAG_OVERLAPPED and a timeout. On ERROR_PIPE_BUSY it should call WaitNamedPipe with a bounded
+            timeout, retry a bounded number of times, then fail. A close with no reply means the connection cap
+            was reached or Apollo is stopping; treat it as busy, not as an answer. Other administrators and
+            SYSTEM-level processes are outside this threat model: an administrator can already stop Apollo and
+            take the pipe name, and the owner and process id checks are what separate administrator-level
+            processes from ordinary users and from each other.}
+
+            One request per connection. Send one UTF-8 JSON object followed by a newline (at most 4096 bytes
+            including the newline) and read one JSON object followed by a newline. A connection that
+            sends nothing gets a `timeout` error reply after 5 seconds and is closed after at most 5 more seconds
+            (the server waits that long for the client to finish reading). At most 4 connections are served at once;
+            the rest are closed without a reply.
+            @code{}
+            {"v":1,"op":"status"}
+            {"v":1,"op":"set_enabled","enabled":true}
+            {"v":1,"op":"revoke_client","client_uuid":"<uuid>"}
+            {"v":1,"op":"clear_revoke","client_uuid":"<uuid>"}
+            @endcode
+            Replies are `{"v":1,"ok":true,...}` or `{"v":1,"ok":false,"error":"<code>"}`, with a fixed error code
+            that never repeats the request.
+            - `status` reports whether USB forwarding is on, whether the tunnel is listening, its port, whether a
+              stream is required, the running forwards, each paired client's uuid, name and USB permission, and the
+              uuids on the deny list. It never contains the tunnel token, certificates or keys.
+            - `set_enabled` starts or stops the tunnel at once, with no restart and no effect on streams. The
+              reply says `"persisted":false`: the change lasts only until Apollo restarts, and
+              `usb_forwarding_enabled` in the config file decides the next start. Each start uses a new tunnel
+              token. A port that `usb_forwarding_port` would not allow is refused (`port_refused`).
+            - `revoke_client` adds the client to a deny list and cuts its running forwards. The reply has
+              `forwards_cut`, `"denied":true` and `"known"`. Uuids are compared without regard to case. `known` is true
+              only when the uuid belongs to a client that is paired right now; an unknown uuid is still denied (denying
+              ahead of time is allowed) but the reply says `"known":false`, so a typo is visible. A denied client is refused at the tunnel handshake, at the
+              periodic recheck and in the capability reply (reason `forbidden`, no port or token), until Apollo
+              restarts or `clear_revoke` removes it. It does not unpair the client and does not change its stored
+              permission. The list holds 256 clients. When it is full, entries of clients that are no longer paired are
+              dropped first; if it is still full the answer is `deny_list_full` (the forwards are still cut).
+            - `clear_revoke` removes a client from the deny list. The reply has `"denied":false` and `"known"`.
+
+            Granting or removing the USB forwarding permission stays in the client page.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            usb_forwarding_control = enabled
             @endcode</td>
     </tr>
 </table>

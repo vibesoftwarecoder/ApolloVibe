@@ -211,6 +211,10 @@ namespace config {
 
     // Only let a client forward a device while it has an active stream session.
     bool usb_forwarding_require_stream {true};
+
+    // A Windows named pipe, open to SYSTEM and Administrators only, that shows and steers USB forwarding.
+    // Off unless the host owner turns it on; with it off there is no pipe and no thread.
+    bool usb_forwarding_control {false};
   };
 
   struct input_t {

@@ -1250,6 +1250,7 @@ namespace config {
     bool_f(vars, "usb_forwarding_enabled", nvhttp.usb_forwarding_enabled);
     generic_f(vars, "usb_forwarding_port", nvhttp.usb_forwarding_port, parse_usb_forwarding_port);
     bool_f(vars, "usb_forwarding_require_stream", nvhttp.usb_forwarding_require_stream);
+    bool_f(vars, "usb_forwarding_control", nvhttp.usb_forwarding_control);
     list_prep_cmd_f(vars, "global_prep_cmd", config::sunshine.prep_cmds);
     list_prep_cmd_f(vars, "global_state_cmd", config::sunshine.state_cmds);
     list_server_cmd_f(vars, "server_cmd", config::sunshine.server_cmds);

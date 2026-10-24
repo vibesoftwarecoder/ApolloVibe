@@ -62,6 +62,7 @@ venv/
 # These are artifacts, not sources — they were showing up as repo state on every
 # status check.
 apollovibe-*-windows-x64.zip
+apollovibe-windows-x64.zip
 _repackage/
 build_apollovibe.log
 configure_check.log
