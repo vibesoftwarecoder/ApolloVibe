@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cctype>
 #include <filesystem>
+#include <set>
 #include <format>
 #include <memory>
 #include <mutex>
@@ -49,6 +50,8 @@
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
   #include "remote_usb/reverse_tunnel_service.h"
+  #include "remote_usb/usb_control_pipe.h"
+  #include "remote_usb/usb_tunnel_manager.h"
 #endif
 
 using namespace std::literals;
@@ -1553,6 +1556,9 @@ namespace nvhttp {
     if (!inputs.service_running) {
       return usb_forwarding_state::unavailable;
     }
+    if (inputs.denied) {
+      return usb_forwarding_state::forbidden;
+    }
     if (!(inputs.perm & PERM::usb_forward)) {
       return usb_forwarding_state::forbidden;
     }
@@ -1630,13 +1636,91 @@ namespace nvhttp {
     return static_cast<std::uint16_t>(candidate);
   }
 
-  remote_usb::client_authorization usb_forwarding_client_authorization(crypto::PERM perm, bool require_stream, bool has_active_stream) {
+  namespace {
+    std::mutex usb_deny_mutex;
+    std::set<std::string> usb_denied;
+
+    /** The form paired clients are stored in: upper case (uuid_t::string() writes upper-case hex). */
+    std::string canonical_uuid(std::string uuid) {
+      for (auto &c : uuid) {
+        if (c >= 'a' && c <= 'z') {
+          c = static_cast<char>(c - 'a' + 'A');
+        }
+      }
+      return uuid;
+    }
+
+    /** The uuids of the currently paired clients, in canonical form. */
+    std::set<std::string> paired_uuids_canonical() {
+      std::set<std::string> result;
+      const std::lock_guard lock {cert_chain_mutex};
+      for (const auto &named_cert_p : cert_chain.list()) {
+        result.insert(canonical_uuid(named_cert_p->uuid));
+      }
+      return result;
+    }
+  }  // namespace
+
+  usb_deny_result usb_forwarding_deny_client(const std::string &uuid) {
+    const auto key = canonical_uuid(uuid);
+    {
+      const std::lock_guard lock {usb_deny_mutex};
+      if (usb_denied.count(key)) {
+        return usb_deny_result::already_denied;
+      }
+      if (usb_denied.size() < USB_FORWARDING_MAX_DENIED) {
+        usb_denied.insert(key);
+        return usb_deny_result::added;
+      }
+    }
+
+    // Full: forget the clients that are no longer paired (they cannot connect anyway), then try again.
+    // The pairing list is read first and with no deny-list lock held, so the two locks never nest.
+    const auto paired = paired_uuids_canonical();
+    const std::lock_guard lock {usb_deny_mutex};
+    for (auto it = usb_denied.begin(); it != usb_denied.end();) {
+      it = paired.count(*it) ? std::next(it) : usb_denied.erase(it);
+    }
+    if (usb_denied.count(key)) {
+      return usb_deny_result::already_denied;
+    }
+    if (usb_denied.size() >= USB_FORWARDING_MAX_DENIED) {
+      return usb_deny_result::full;
+    }
+    usb_denied.insert(key);
+    return usb_deny_result::added;
+  }
+
+  bool usb_forwarding_allow_client(const std::string &uuid) {
+    const std::lock_guard lock {usb_deny_mutex};
+    return usb_denied.erase(canonical_uuid(uuid)) > 0;
+  }
+
+  bool usb_forwarding_client_denied(const std::string &uuid) {
+    const std::lock_guard lock {usb_deny_mutex};
+    return usb_denied.count(canonical_uuid(uuid)) > 0;
+  }
+
+  std::vector<std::string> usb_forwarding_denied_clients() {
+    const std::lock_guard lock {usb_deny_mutex};
+    return {usb_denied.begin(), usb_denied.end()};
+  }
+
+  usb_forwarding_inputs usb_forwarding_inputs_for_client(bool service_running, crypto::PERM perm, const std::string &client_uuid, bool has_active_stream) {
     usb_forwarding_inputs inputs;
-    inputs.enabled = true;  // the tunnel only runs when it is enabled
-    inputs.service_running = true;
+    inputs.enabled = true;
+    inputs.service_running = service_running;
     inputs.perm = perm;
-    inputs.require_stream = require_stream;
+    inputs.require_stream = config::nvhttp.usb_forwarding_require_stream;
     inputs.has_active_stream = has_active_stream;
+    inputs.denied = !client_uuid.empty() && usb_forwarding_client_denied(client_uuid);
+    return inputs;
+  }
+
+  remote_usb::client_authorization usb_forwarding_client_authorization(crypto::PERM perm, bool require_stream, bool has_active_stream, const std::string &client_uuid) {
+    // The tunnel only runs when it is enabled, and the caller is the running tunnel.
+    auto inputs = usb_forwarding_inputs_for_client(true, perm, client_uuid, has_active_stream);
+    inputs.require_stream = require_stream;
 
     switch (usb_forwarding_decide(inputs)) {
       case usb_forwarding_state::ready:
@@ -1651,10 +1735,11 @@ namespace nvhttp {
     return remote_usb::client_authorization::forbidden;
   }
 
-  const std::string &usb_forwarding_token() {
-    // Created once per process and kept in memory only. The same value goes to every client
-    // that is allowed to forward, which is why the tunnel checks the client again by certificate.
-    static const std::string token = [] {
+  namespace {
+    std::mutex usb_token_mutex;
+    std::string usb_token_value;
+
+    std::string new_usb_token() {
       const auto bytes = crypto::rand(32);
       static constexpr char digits[] = "0123456789abcdef";
       std::string hex;
@@ -1664,8 +1749,22 @@ namespace nvhttp {
         hex.push_back(digits[byte & 0x0f]);
       }
       return hex;
-    }();
-    return token;
+    }
+  }  // namespace
+
+  std::string usb_forwarding_token() {
+    // Kept in memory only. The same value goes to every client that is allowed to forward, which is
+    // why the tunnel checks the client again by certificate.
+    const std::lock_guard lock {usb_token_mutex};
+    if (usb_token_value.empty()) {
+      usb_token_value = new_usb_token();
+    }
+    return usb_token_value;
+  }
+
+  void usb_forwarding_rotate_token() {
+    const std::lock_guard lock {usb_token_mutex};
+    usb_token_value = new_usb_token();
   }
 
   namespace {
@@ -1674,7 +1773,9 @@ namespace nvhttp {
       return std::find(connected_uuids.begin(), connected_uuids.end(), uuid) != connected_uuids.end();
     }
 
-    // Written before the HTTPS server starts and cleared after it stops.
+    // Written under the tunnel manager lock; read by HTTPS handlers.
+    // The tunnel is on (as the host owner or the control pipe last set it), and listening on this port.
+    std::atomic<bool> usb_runtime_enabled {false};
     std::atomic<bool> usb_tunnel_running {false};
     std::atomic<std::uint16_t> usb_tunnel_port {0};
   }  // namespace
@@ -1685,16 +1786,13 @@ namespace nvhttp {
     // The HTTPS server has already rejected any client that is not paired; the permission and the stream are checked here.
     auto named_cert_p = get_verified_cert(request);
 
-    usb_forwarding_inputs inputs;
-    inputs.enabled = config::nvhttp.usb_forwarding_enabled;
-    inputs.service_running = usb_tunnel_running.load();
-    inputs.perm = named_cert_p->perm;
-    inputs.require_stream = config::nvhttp.usb_forwarding_require_stream;
+    auto inputs = usb_forwarding_inputs_for_client(usb_tunnel_running.load(), named_cert_p->perm, named_cert_p->uuid, false);
+    inputs.enabled = usb_runtime_enabled.load();
     inputs.has_active_stream = inputs.require_stream && client_has_active_session(named_cert_p->uuid);
 
     const auto state = usb_forwarding_decide(inputs);
     // Only read the token when it is going to be sent.
-    const std::string_view token = state == usb_forwarding_state::ready ? std::string_view {usb_forwarding_token()} : std::string_view {};
+    const std::string token = state == usb_forwarding_state::ready ? usb_forwarding_token() : std::string {};
 
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "application/json");
@@ -1704,10 +1802,6 @@ namespace nvhttp {
 
 #ifdef _WIN32
   namespace {
-    // The running tunnel, so withdrawing a client's access can cut its forwards at once.
-    std::mutex usb_tunnel_mutex;
-    remote_usb::reverse_tunnel_service *usb_tunnel_service = nullptr;
-
     /**
      * @brief The tunnel's second look at a client, after the token matched.
      * @details Looks the certificate up again, so a client that was unpaired, or lost its permission,
@@ -1727,63 +1821,229 @@ namespace nvhttp {
       }
 
       const bool require_stream = config::nvhttp.usb_forwarding_require_stream;
-      return {usb_forwarding_client_authorization(perm, require_stream, require_stream && client_has_active_session(uuid)), uuid};
+      return {usb_forwarding_client_authorization(perm, require_stream, require_stream && client_has_active_session(uuid), uuid), uuid};
     }
 
+    /** The real tunnel service, behind the interface the manager and its tests use. */
+    class service_instance final: public remote_usb::tunnel_instance {
+    public:
+      service_instance(std::unique_ptr<remote_usb::reverse_tunnel_service> service, std::uint16_t port):
+          service_(std::move(service)),
+          port_(port) {}
+
+      bool running() const override {
+        return service_->running();
+      }
+
+      std::uint16_t port() const override {
+        return port_;
+      }
+
+      void stop() noexcept override {
+        service_->stop();
+      }
+
+      void revoke(const std::string &client_id) override {
+        service_->revoke(client_id);
+      }
+
+      std::optional<std::size_t> revoke_counted(const std::string &client_id) override {
+        return service_->revoke_counted(client_id);
+      }
+
+      std::optional<std::vector<remote_usb::forward_info>> forwards() override {
+        return service_->forwards();
+      }
+
+    private:
+      std::unique_ptr<remote_usb::reverse_tunnel_service> service_;
+      std::uint16_t port_;
+    };
+
+  }  // namespace
+
+  std::optional<remote_usb::reverse_tunnel_config> make_usb_tunnel_config(remote_usb::start_failure &failure) {
+    const auto address_family = net::af_from_enum_string(config::sunshine.address_family);
+    const auto port = usb_forwarding_resolve_port(config::nvhttp.usb_forwarding_port, net::map_port(PORT_HTTP));
+    if (!port) {
+      BOOST_LOG(warning) << "USB forwarding stays off: usb_forwarding_port is out of range or collides with a port this host uses"sv;
+      failure = remote_usb::start_failure::port_refused;
+      return std::nullopt;
+    }
+
+    remote_usb::reverse_tunnel_config tunnel_config;
+    tunnel_config.bind_address = std::string {net::af_to_any_address_string(address_family)};
+    tunnel_config.port = *port;
+    tunnel_config.certificate_file = config::nvhttp.cert;
+    tunnel_config.private_key_file = config::nvhttp.pkey;
+    // A new token on every start: a tunnel that was stopped and started again hands out a fresh secret,
+    // so a token a client kept from before it was switched off is worthless.
+    usb_forwarding_rotate_token();
+    tunnel_config.session_token = usb_forwarding_token();
+    tunnel_config.verify_client_cert = [](X509 *x509) {
+      p_named_cert_t named_cert_p;
+      const std::lock_guard lock {cert_chain_mutex};
+      return cert_chain.verify(x509, named_cert_p) == nullptr;
+    };
+    tunnel_config.authorize_client = authorize_usb_client;
+    return tunnel_config;
+  }
+
+  namespace {
     /**
-     * @brief Start the USB forwarding tunnel when the host owner enabled it.
-     * @return The running service, or null (with the reason already logged) when it is off or cannot start.
+     * @brief Build and start the USB forwarding tunnel. Used by the manager at startup and by the control pipe.
+     * @return The running tunnel, or null (with the reason already logged, and @p failure set) when it cannot start.
      */
-    std::unique_ptr<remote_usb::reverse_tunnel_service> start_usb_tunnel(net::af_e address_family) {
-      if (!config::nvhttp.usb_forwarding_enabled) {
+    std::shared_ptr<remote_usb::tunnel_instance> start_usb_tunnel(remote_usb::start_failure &failure) {
+      auto tunnel_config = make_usb_tunnel_config(failure);
+      if (!tunnel_config) {
         return nullptr;
       }
-
-      const auto port = usb_forwarding_resolve_port(config::nvhttp.usb_forwarding_port, net::map_port(PORT_HTTP));
-      if (!port) {
-        BOOST_LOG(warning) << "USB forwarding stays off: usb_forwarding_port is out of range or collides with a port this host uses"sv;
-        return nullptr;
-      }
-
-      remote_usb::reverse_tunnel_config tunnel_config;
-      tunnel_config.bind_address = std::string {net::af_to_any_address_string(address_family)};
-      tunnel_config.port = *port;
-      tunnel_config.certificate_file = config::nvhttp.cert;
-      tunnel_config.private_key_file = config::nvhttp.pkey;
-      tunnel_config.session_token = usb_forwarding_token();
-      tunnel_config.verify_client_cert = [](X509 *x509) {
-        p_named_cert_t named_cert_p;
-        const std::lock_guard lock {cert_chain_mutex};
-        return cert_chain.verify(x509, named_cert_p) == nullptr;
-      };
-      tunnel_config.authorize_client = authorize_usb_client;
+      const auto port = tunnel_config->port;
 
       auto service = std::make_unique<remote_usb::reverse_tunnel_service>();
-      if (!service->start(std::move(tunnel_config))) {
+      if (!service->start(std::move(*tunnel_config))) {
+        failure = remote_usb::start_failure::failed;
         return nullptr;
       }
-
-      {
-        const std::lock_guard lock {usb_tunnel_mutex};
-        usb_tunnel_service = service.get();
-      }
-      usb_tunnel_port = *port;
-      usb_tunnel_running = true;
-      return service;
+      return std::make_shared<service_instance>(std::move(service), port);
     }
+
+    /** The one tunnel manager. Created on first use; the HTTPS hooks may call it before or after start(). */
+    remote_usb::usb_tunnel_manager &usb_manager() {
+      static remote_usb::usb_tunnel_manager manager {
+        start_usb_tunnel,
+        [](bool enabled, bool running, std::uint16_t port) {
+          usb_runtime_enabled = enabled;
+          usb_tunnel_running = running;
+          usb_tunnel_port = port;
+        }
+      };
+      return manager;
+    }
+
+    /** What the control pipe asks of Apollo. */
+    class control_backend final: public remote_usb::usb_control_backend {
+    public:
+      remote_usb::control_status status() override {
+        auto &manager = usb_manager();
+        remote_usb::control_status result;
+        result.enabled = usb_runtime_enabled.load();
+        result.listening = manager.running();
+        result.port = result.listening ? manager.port() : 0;
+        result.require_stream = config::nvhttp.usb_forwarding_require_stream;
+        result.denied = usb_forwarding_denied_clients();
+
+        {
+          // Only the uuid, the name and the permission bit leave this lock. Certificates stay in the chain.
+          const std::lock_guard lock {cert_chain_mutex};
+          for (const auto &named_cert_p : cert_chain.list()) {
+            result.clients.push_back({named_cert_p->uuid, named_cert_p->name, !!(named_cert_p->perm & PERM::usb_forward)});
+          }
+        }
+
+        for (const auto &forward : manager.forwards()) {
+          remote_usb::control_forward entry;
+          entry.client_uuid = forward.client_id;
+          entry.busid = forward.busid;
+          entry.since_unix = forward.since_unix;
+          for (const auto &client : result.clients) {
+            if (client.uuid == forward.client_id) {
+              entry.client_name = client.name;
+              break;
+            }
+          }
+          result.forwards.push_back(std::move(entry));
+        }
+        return result;
+      }
+
+      remote_usb::set_enabled_outcome set_enabled(bool enabled) override {
+        // Runtime only. The config file is written by the web UI's save handler, which replaces the whole
+        // file from a posted form and has no function to change one key, so a change made here lasts until
+        // Apollo restarts and the reply says "persisted":false.
+        auto &manager = usb_manager();
+        const auto result = enabled ? manager.enable() : manager.disable();
+        remote_usb::set_enabled_outcome outcome;
+        switch (result) {
+          case remote_usb::manager_result::ok:
+            break;
+          case remote_usb::manager_result::port_refused:
+            outcome.error = remote_usb::control_error::port_refused;
+            break;
+          case remote_usb::manager_result::start_failed:
+            outcome.error = remote_usb::control_error::start_failed;
+            break;
+          case remote_usb::manager_result::shutting_down:
+            outcome.error = remote_usb::control_error::shutting_down;
+            break;
+        }
+        return outcome;
+      }
+
+      /** The stored spelling of a paired client's uuid, whatever case was typed; nothing when nobody has it. */
+      static std::optional<std::string> paired_spelling(const std::string &client_uuid) {
+        const auto wanted = canonical_uuid(client_uuid);
+        const std::lock_guard lock {cert_chain_mutex};
+        for (const auto &named_cert_p : cert_chain.list()) {
+          if (canonical_uuid(named_cert_p->uuid) == wanted) {
+            return named_cert_p->uuid;
+          }
+        }
+        return std::nullopt;
+      }
+
+      remote_usb::revoke_outcome revoke_client(const std::string &client_uuid) override {
+        // Deny first, so the client cannot slip back in between the cut and the deny.
+        // An uuid nobody has is still denied (a pre-emptive deny is legitimate); the reply says known:false.
+        const auto denied = usb_forwarding_deny_client(client_uuid);
+        const auto stored = paired_spelling(client_uuid);
+        remote_usb::revoke_outcome outcome;
+        outcome.known = stored.has_value();
+        outcome.forwards_cut = usb_manager().revoke_counted(stored.value_or(client_uuid));
+        if (denied == usb_deny_result::full) {
+          outcome.error = remote_usb::control_error::deny_list_full;  // the forwards were still cut
+        }
+        return outcome;
+      }
+
+      remote_usb::clear_outcome clear_revoke(const std::string &client_uuid) override {
+        usb_forwarding_allow_client(client_uuid);
+        remote_usb::clear_outcome outcome;
+        outcome.known = paired_spelling(client_uuid).has_value();
+        return outcome;
+      }
+    };
+
+    /** Stops the tunnel for good when start() is left by any path. */
+    struct usb_shutdown_guard {
+      ~usb_shutdown_guard() {
+        usb_manager().shutdown();
+      }
+    };
   }  // namespace
 #endif
 
   void usb_forwarding_revoke_client(const std::string &uuid) {
 #ifdef _WIN32
-    const std::lock_guard lock {usb_tunnel_mutex};
-    if (usb_tunnel_service) {
-      usb_tunnel_service->revoke(uuid);
-    }
+    usb_manager().revoke(uuid);
 #else
     (void) uuid;
 #endif
   }
+
+#ifdef _WIN32
+  std::unique_ptr<remote_usb::usb_control_backend> make_usb_control_backend() {
+    return std::make_unique<control_backend>();
+  }
+
+  std::unique_ptr<remote_usb::usb_control_pipe> start_usb_control(remote_usb::usb_control_backend &backend, remote_usb::usb_control_pipe_config base) {
+    if (base.name.empty()) {
+      base.name = remote_usb::usb_control_pipe_name(net::map_port(PORT_HTTP));
+    }
+    return remote_usb::start_usb_control_pipe_if_enabled(config::nvhttp.usb_forwarding_control, backend, std::move(base));
+  }
+#endif
 
   void getClipboard(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
@@ -1913,10 +2173,20 @@ namespace nvhttp {
     setup(pkey, cert);
 
     // USB forwarding is off unless the host owner turned it on: no listener, no thread, no log output.
+    usb_runtime_enabled = config::nvhttp.usb_forwarding_enabled;
 #ifdef _WIN32
-    auto usb_tunnel = start_usb_tunnel(address_family);
-#else
+    // Declared first, destroyed last: the tunnel is stopped for good whichever way this function ends.
+    usb_shutdown_guard usb_guard;
     if (config::nvhttp.usb_forwarding_enabled) {
+      usb_manager().enable();  // refusals and failures are logged where they happen
+    }
+
+    // The control pipe exists only when the host owner asked for it. Declared after the guard, so it is
+    // stopped before the tunnel is.
+    control_backend usb_control;
+    auto usb_control_pipe = start_usb_control(usb_control);
+#else
+    if (config::nvhttp.usb_forwarding_enabled || config::nvhttp.usb_forwarding_control) {
       BOOST_LOG(warning) << "USB forwarding is only available on Windows hosts"sv;
     }
 #endif
@@ -2037,6 +2307,13 @@ namespace nvhttp {
     // Wait for any event
     shutdown_event->view();
 
+#ifdef _WIN32
+    // First, so nothing can start the tunnel again while the process shuts down.
+    if (usb_control_pipe) {
+      usb_control_pipe->stop();
+    }
+#endif
+
     map_id_sess.clear();
 
     https_server.stop();
@@ -2047,15 +2324,7 @@ namespace nvhttp {
 
 #ifdef _WIN32
     // Stop accepting tunnels and detach anything still attached before the process goes on to shut down.
-    usb_tunnel_running = false;
-    usb_tunnel_port = 0;
-    {
-      const std::lock_guard lock {usb_tunnel_mutex};
-      usb_tunnel_service = nullptr;
-    }
-    if (usb_tunnel) {
-      usb_tunnel->stop();
-    }
+    usb_manager().shutdown();
 #endif
   }
 
@@ -2136,11 +2405,11 @@ namespace nvhttp {
     for (; it != client.named_devices.end(); ++it) {
       auto named_cert_p = *it;
       if (named_cert_p->uuid == uuid) {
-        named_cert_p->name = name;
         named_cert_p->display_mode = display_mode;
         {
-          // The USB tunnel reads this from its own thread, under the same lock.
+          // The USB tunnel and the control pipe read these from their own threads, under the same lock.
           const std::lock_guard lock {cert_chain_mutex};
+          named_cert_p->name = name;
           named_cert_p->perm = newPerm;
         }
         named_cert_p->do_cmds = do_cmds;

@@ -154,6 +154,9 @@ namespace crypto {
 
     void clear();
 
+    /** The paired clients in the chain. Like every other use of the chain, call it with the owner's lock held. */
+    std::vector<p_named_cert_t> list() const;
+
     const char *verify(x509_t::element_type *cert, p_named_cert_t& named_cert_out);
 
   private:

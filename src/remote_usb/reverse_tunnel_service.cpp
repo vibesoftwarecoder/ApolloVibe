@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -174,6 +175,12 @@ namespace remote_usb {
         return client_id_;
       }
 
+      /** Service thread only. */
+      forward_info
+      describe() const {
+        return { client_id_, busid_, since_unix_ };
+      }
+
       /** Ask the authorizer again; cut the forward when the answer is no longer "allowed". Service thread only. */
       void
       recheck() {
@@ -291,6 +298,8 @@ namespace remote_usb {
           return;
         }
         client_id_ = answer.client_id;
+        busid_ = busid;
+        since_unix_ = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         authenticated_ = true;
 
         // One forward per device and client: the same bus id number on two different clients is
@@ -614,6 +623,8 @@ namespace remote_usb {
       x509_ptr peer_cert_ { nullptr, &X509_free };
       std::string remote_address_;
       std::string client_id_;
+      std::string busid_;
+      std::int64_t since_unix_ { 0 };
       std::atomic_bool authenticated_ { false };
 
       tcp::acceptor local_acceptor_ { stream_.get_executor() };
@@ -922,6 +933,40 @@ namespace remote_usb {
     }
   }
 
+  namespace {
+    /**
+     * Runs @p task on the service thread and waits for its answer.
+     * Nothing when the service is not running, or does not get to it in time. The shared state
+     * keeps the answer slot alive if the task runs after the caller gave up.
+     */
+    template <class Result, class Task>
+    std::optional<Result>
+    run_on_service_thread(asio::io_context &io, const std::atomic_bool &running, std::chrono::milliseconds timeout, Task task) {
+      if (!running.load()) {
+        return std::nullopt;
+      }
+      auto promise = std::make_shared<std::promise<Result>>();
+      auto future = promise->get_future();
+      asio::post(io, [promise, task = std::move(task)]() mutable {
+        try {
+          promise->set_value(task());
+        }
+        catch (...) {
+          // The caller sees "no answer"; never throw into the io loop.
+        }
+      });
+      try {
+        if (future.wait_for(timeout) != std::future_status::ready) {
+          return std::nullopt;
+        }
+        return future.get();
+      }
+      catch (...) {
+        return std::nullopt;  // the task was dropped (service stopping) or threw
+      }
+    }
+  }  // namespace
+
   void
   reverse_tunnel_service::revoke(const std::string &client_id) {
     if (!impl_ || client_id.empty() || !impl_->running.load()) {
@@ -941,6 +986,46 @@ namespace remote_usb {
         BOOST_LOG(info) << "Remote USB tunnel closing a forward: access was withdrawn";
         session->abort();
       }
+    });
+  }
+
+  std::optional<std::size_t>
+  reverse_tunnel_service::revoke_counted(const std::string &client_id, std::chrono::milliseconds timeout) {
+    if (!impl_ || client_id.empty()) {
+      return std::nullopt;
+    }
+    return run_on_service_thread<std::size_t>(impl_->io, impl_->running, timeout, [impl = impl_, client_id]() -> std::size_t {
+      std::vector<session_ptr> matching;
+      {
+        const std::lock_guard lock(impl->session_mutex);
+        for (const auto &session : impl->sessions) {
+          if (session->authenticated() && !session->done() && session->client_id() == client_id) {
+            matching.push_back(session);
+          }
+        }
+      }
+      for (const auto &session : matching) {
+        BOOST_LOG(info) << "Remote USB tunnel closing a forward: access was withdrawn";
+        session->abort();
+      }
+      return matching.size();
+    });
+  }
+
+  std::optional<std::vector<forward_info>>
+  reverse_tunnel_service::forwards(std::chrono::milliseconds timeout) const {
+    if (!impl_) {
+      return std::nullopt;
+    }
+    return run_on_service_thread<std::vector<forward_info>>(impl_->io, impl_->running, timeout, [impl = impl_]() {
+      std::vector<forward_info> result;
+      const std::lock_guard lock(impl->session_mutex);
+      for (const auto &session : impl->sessions) {
+        if (session->authenticated() && !session->done()) {
+          result.push_back(session->describe());
+        }
+      }
+      return result;
     });
   }
 

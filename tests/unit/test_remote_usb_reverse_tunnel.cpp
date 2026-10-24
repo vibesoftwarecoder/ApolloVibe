@@ -12,6 +12,7 @@
   #include <src/nvhttp.h>
   #include <src/remote_usb/reverse_tunnel_service.h>
 
+  #include <algorithm>
   #include <atomic>
   #include <chrono>
   #include <condition_variable>
@@ -386,7 +387,7 @@ namespace {
           }
           record = it->second;
         }
-        return remote_usb::authorization_result {nvhttp::usb_forwarding_client_authorization(record.perm, require_stream, record.has_stream), record.id};
+        return remote_usb::authorization_result {nvhttp::usb_forwarding_client_authorization(record.perm, require_stream, record.has_stream, record.id), record.id};
       };
       // Pretend to be the kernel: only the fake driver's own connection comes from "System".
       config.attach_peer_pid_lookup = [this](std::uint16_t peer_port, std::uint16_t) -> std::optional<std::uint32_t> {
@@ -1433,6 +1434,101 @@ TEST(RemoteUsbTunnel, AScannersFailedTlsHandshakeIsLoggedQuietly) {
   EXPECT_NE(log.find("Debug: Remote USB tunnel TLS rejected"), std::string::npos) << "the probe saw no rejection at all";
   EXPECT_EQ(log.find("Info: Remote USB tunnel TLS rejected"), std::string::npos);
   EXPECT_EQ(log.find("Warning: Remote USB tunnel TLS rejected"), std::string::npos);
+}
+
+// ---- revoking a client for real ---------------------------------------------------------------------------------
+
+namespace {
+  /** Leaves the process-wide deny list empty, whatever a test did. */
+  struct tunnel_deny_guard {
+    ~tunnel_deny_guard() {
+      for (const auto &uuid : nvhttp::usb_forwarding_denied_clients()) {
+        nvhttp::usb_forwarding_allow_client(uuid);
+      }
+    }
+  };
+}  // namespace
+
+TEST(RemoteUsbTunnel, ARevokedClientCannotComeBackOthersAreUnaffectedAndClearingItRestoresAccess) {
+  tunnel_deny_guard guard;
+  tunnel_fixture fixture;
+  // The recheck is an hour away, so only the revoke itself can end the forward.
+  ASSERT_TRUE(fixture.start([](auto &config) { config.recheck_interval = std::chrono::hours(1); }));
+  tunnel_client alice(&fixture.alice);
+  establish(fixture, alice);
+
+  // What the control pipe does: deny first, then cut.
+  ASSERT_EQ(nvhttp::usb_forwarding_deny_client("alice-id"), nvhttp::usb_deny_result::added);
+  fixture.service->revoke("alice-id");
+  EXPECT_TRUE(detached_and_closed(fixture, alice));
+
+  // She still holds the permission and the token, yet cannot attach again.
+  EXPECT_EQ(error_reason(fixture.forward(&fixture.alice, kToken, "1-4")), "forbidden");
+  EXPECT_EQ(error_reason(fixture.forward(&fixture.alice, kToken, "1-5")), "forbidden") << "a second try got in";
+  // Bob is untouched.
+  EXPECT_TRUE(is_ready(fixture.forward(&fixture.bob, kToken, "1-3")));
+
+  ASSERT_TRUE(nvhttp::usb_forwarding_allow_client("alice-id"));
+  EXPECT_TRUE(is_ready(fixture.forward(&fixture.alice, kToken, "1-4"))) << "clearing the revoke did not give access back";
+}
+
+TEST(RemoteUsbTunnel, DenyingAClientAloneEndsItsForwardAtTheNextRecheck) {
+  tunnel_deny_guard guard;
+  tunnel_fixture fixture;
+  ASSERT_TRUE(fixture.start());  // rechecks every 150 ms
+  tunnel_client alice(&fixture.alice);
+  establish(fixture, alice);
+  nvhttp::usb_forwarding_deny_client("alice-id");
+  EXPECT_TRUE(detached_and_closed(fixture, alice));
+}
+
+TEST(RemoteUsbTunnel, ADenyOutlivesATokenRotation) {
+  tunnel_deny_guard guard;
+  tunnel_fixture fixture;
+  nvhttp::usb_forwarding_deny_client("alice-id");
+  nvhttp::usb_forwarding_rotate_token();
+  const auto fresh = nvhttp::usb_forwarding_token();
+  ASSERT_TRUE(fixture.start([&](auto &config) { config.session_token = fresh; }));
+  EXPECT_EQ(error_reason(fixture.forward(&fixture.alice, fresh, "1-2")), "forbidden");
+  EXPECT_TRUE(is_ready(fixture.forward(&fixture.bob, fresh, "1-3")));
+}
+
+TEST(RemoteUsbTunnel, AfterARestartWithANewTokenTheOldTokenIsRefused) {
+  tunnel_fixture fixture;
+  ASSERT_TRUE(fixture.start());
+  EXPECT_TRUE(is_ready(fixture.forward(&fixture.alice, kToken, "1-2")));
+  fixture.service->stop();
+
+  auto config = fixture.tunnel_config();
+  config.session_token = kWrongToken;  // what a restart through nvhttp does: a new random token
+  ASSERT_TRUE(fixture.service->start(std::move(config)));
+  EXPECT_EQ(error_reason(fixture.forward(&fixture.alice, kToken, "1-2")), "unauthorized") << "the token from before the restart still works";
+  EXPECT_TRUE(is_ready(fixture.forward(&fixture.alice, kWrongToken, "1-2")));
+}
+
+TEST(RemoteUsbTunnel, TheServiceListsItsRunningForwardsAndCountsWhatARevokeCuts) {
+  tunnel_fixture fixture;
+  ASSERT_TRUE(fixture.start([](auto &config) { config.recheck_interval = std::chrono::hours(1); }));
+  EXPECT_TRUE(fixture.service->forwards().value().empty());
+  tunnel_client alice(&fixture.alice);
+  establish(fixture, alice);
+  tunnel_client bob(&fixture.bob);
+  ASSERT_TRUE(bob.connect(fixture.port()));
+  ASSERT_TRUE(bob.send_forward(kToken, "1-3"));
+  ASSERT_TRUE(is_ready(bob.read_line()));
+
+  auto forwards = fixture.service->forwards().value();
+  ASSERT_EQ(forwards.size(), 2u);
+  std::sort(forwards.begin(), forwards.end(), [](const auto &a, const auto &b) { return a.client_id < b.client_id; });
+  EXPECT_EQ(forwards[0].client_id, "alice-id");
+  EXPECT_EQ(forwards[0].busid, "1-2");
+  EXPECT_EQ(forwards[1].client_id, "bob-id");
+  EXPECT_EQ(forwards[1].busid, "1-3");
+  EXPECT_GT(forwards[0].since_unix, 1700000000);
+
+  EXPECT_EQ(fixture.service->revoke_counted("nobody"), std::optional<std::size_t> {0});
+  EXPECT_EQ(fixture.service->revoke_counted("alice-id"), std::optional<std::size_t> {1});
+  EXPECT_TRUE(detached_and_closed(fixture, alice));
 }
 
 #endif  // _WIN32

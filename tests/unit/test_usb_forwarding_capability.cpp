@@ -228,12 +228,12 @@ TEST(UsbForwardingDecision, NoPortOrTokenUnlessReady_ExhaustiveOverEveryInput) {
 TEST(UsbForwardingDecision, TheTunnelAndTheCapabilityReplyAgree) {
   // Same rules, expressed in the tunnel's vocabulary.
   using remote_usb::client_authorization;
-  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::usb_forward, true, true), client_authorization::allowed);
-  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::usb_forward, true, false), client_authorization::no_stream);
-  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::usb_forward, false, false), client_authorization::allowed);
-  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::_default, true, true), client_authorization::forbidden);
-  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::_all, false, true), client_authorization::forbidden);
-  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::_no, false, false), client_authorization::forbidden);
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::usb_forward, true, true, "someone"), client_authorization::allowed);
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::usb_forward, true, false, "someone"), client_authorization::no_stream);
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::usb_forward, false, false, "someone"), client_authorization::allowed);
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::_default, true, true, "someone"), client_authorization::forbidden);
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::_all, false, true, "someone"), client_authorization::forbidden);
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(PERM::_no, false, false, "someone"), client_authorization::forbidden);
 }
 
 // ---- permission defaults -------------------------------------------------------------------------------------------
@@ -303,12 +303,12 @@ TEST(UsbForwardingPort, TheDefaultIsNeverOneOfTheReservedOffsets) {
 // ---- the token ---------------------------------------------------------------------------------------------------
 
 TEST(UsbForwardingToken, IsSixtyFourHexDigitsAndStableForTheProcess) {
-  const auto &token = nvhttp::usb_forwarding_token();
+  const auto token = nvhttp::usb_forwarding_token();
   ASSERT_EQ(token.size(), 64u);
   for (const unsigned char c : token) {
     EXPECT_TRUE(std::isxdigit(c) && !std::isupper(c)) << c;
   }
-  EXPECT_EQ(&token, &nvhttp::usb_forwarding_token());
+  EXPECT_EQ(token, nvhttp::usb_forwarding_token());  // stable until the tunnel is started again
   EXPECT_NE(token, std::string(64, '0'));
   // What the client would accept.
   EXPECT_EQ(reply(usb_forwarding_state::ready, 48091, token)["reason"], "ready");
@@ -350,4 +350,73 @@ TEST(UsbForwardingConfig, ParsesFromAConfigFile) {
   EXPECT_EQ(vars.at("usb_forwarding_enabled"), "enabled");
   EXPECT_EQ(vars.at("usb_forwarding_port"), "48100");
   EXPECT_EQ(vars.at("usb_forwarding_require_stream"), "disabled");
+}
+
+// ---- the runtime deny list ---------------------------------------------------------------------------------------
+
+namespace {
+  struct deny_guard {
+    ~deny_guard() {
+      for (const auto &uuid : nvhttp::usb_forwarding_denied_clients()) {
+        nvhttp::usb_forwarding_allow_client(uuid);
+      }
+    }
+  };
+
+  const PERM kAllowedPerm = PERM::_default | PERM::usb_forward;
+}  // namespace
+
+TEST(UsbForwardingDeny, ADeniedClientIsToldForbiddenWithNoPortOrToken) {
+  deny_guard guard;
+  const auto allowed = nvhttp::usb_forwarding_inputs_for_client(true, kAllowedPerm, "client-a", true);
+  EXPECT_EQ(nvhttp::usb_forwarding_decide(allowed), usb_forwarding_state::ready);
+
+  ASSERT_EQ(nvhttp::usb_forwarding_deny_client("client-a"), nvhttp::usb_deny_result::added);
+  const auto denied = nvhttp::usb_forwarding_inputs_for_client(true, kAllowedPerm, "client-a", true);
+  const auto state = nvhttp::usb_forwarding_decide(denied);
+  EXPECT_EQ(state, usb_forwarding_state::forbidden);
+  const auto body = reply(state);
+  EXPECT_EQ(body["reason"], "forbidden");
+  EXPECT_FALSE(body.contains("port"));
+  EXPECT_FALSE(body.contains("token"));
+
+  // Somebody else is not affected, and the stored permission was not touched.
+  EXPECT_EQ(nvhttp::usb_forwarding_decide(nvhttp::usb_forwarding_inputs_for_client(true, kAllowedPerm, "client-b", true)), usb_forwarding_state::ready);
+  EXPECT_NE(static_cast<int>(kAllowedPerm & PERM::usb_forward), 0);
+
+  EXPECT_TRUE(nvhttp::usb_forwarding_allow_client("client-a"));
+  EXPECT_EQ(nvhttp::usb_forwarding_decide(nvhttp::usb_forwarding_inputs_for_client(true, kAllowedPerm, "client-a", true)), usb_forwarding_state::ready);
+  EXPECT_FALSE(nvhttp::usb_forwarding_allow_client("client-a")) << "clearing twice";
+}
+
+TEST(UsbForwardingDeny, TheTunnelsOwnDecisionHonoursItToo) {
+  deny_guard guard;
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(kAllowedPerm, true, true, "client-a"), remote_usb::client_authorization::allowed);
+  nvhttp::usb_forwarding_deny_client("client-a");
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(kAllowedPerm, true, true, "client-a"), remote_usb::client_authorization::forbidden);
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(kAllowedPerm, true, true, "client-b"), remote_usb::client_authorization::allowed);
+}
+
+TEST(UsbForwardingDeny, ItSurvivesATokenRotation) {
+  deny_guard guard;
+  nvhttp::usb_forwarding_deny_client("client-a");
+  const auto before = nvhttp::usb_forwarding_token();
+  nvhttp::usb_forwarding_rotate_token();
+  EXPECT_NE(nvhttp::usb_forwarding_token(), before);
+  EXPECT_TRUE(nvhttp::usb_forwarding_client_denied("client-a"));
+}
+
+TEST(UsbForwardingDeny, TheCaseOfAUuidDoesNotMatter) {
+  deny_guard guard;
+  // Paired clients are stored in upper case; an operator may type any case.
+  ASSERT_EQ(nvhttp::usb_forwarding_deny_client("ab12-cd"), nvhttp::usb_deny_result::added);
+  EXPECT_EQ(nvhttp::usb_forwarding_deny_client("AB12-CD"), nvhttp::usb_deny_result::already_denied);
+  EXPECT_TRUE(nvhttp::usb_forwarding_client_denied("AB12-CD"));
+  EXPECT_TRUE(nvhttp::usb_forwarding_client_denied("Ab12-cD"));
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(kAllowedPerm, true, true, "AB12-CD"), remote_usb::client_authorization::forbidden)
+    << "the authorizer, which is given the stored upper-case uuid, missed a deny typed in lower case";
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(kAllowedPerm, true, true, "ab12-cd"), remote_usb::client_authorization::forbidden);
+  EXPECT_TRUE(nvhttp::usb_forwarding_allow_client("Ab12-Cd"));
+  EXPECT_FALSE(nvhttp::usb_forwarding_client_denied("ab12-cd"));
+  EXPECT_EQ(nvhttp::usb_forwarding_client_authorization(kAllowedPerm, true, true, "AB12-CD"), remote_usb::client_authorization::allowed);
 }

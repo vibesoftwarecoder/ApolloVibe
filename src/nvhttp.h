@@ -9,8 +9,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <chrono>
 #include <list>
+#include <memory>
 
 // lib includes
 #include <boost/property_tree/ptree.hpp>
@@ -20,6 +22,11 @@
 // local includes
 #include "crypto.h"
 #include "remote_usb/client_authorization.h"
+#ifdef _WIN32
+  #include "remote_usb/usb_control_pipe.h"
+  #include "remote_usb/reverse_tunnel_service.h"
+  #include "remote_usb/usb_tunnel_manager.h"
+#endif
 #include "rtsp.h"
 #include "thread_safe.h"
 
@@ -310,12 +317,13 @@ namespace nvhttp {
     crypto::PERM perm {crypto::PERM::_no};  ///< Permissions of the calling client.
     bool require_stream {true};      ///< config::nvhttp.usb_forwarding_require_stream
     bool has_active_stream {false};  ///< The calling client has a launch/stream session now.
+    bool denied {false};             ///< The host owner refused this client until Apollo restarts (see usb_forwarding_deny_client).
   };
 
   /**
    * @brief Whether a client that presented a valid certificate may use the tunnel right now.
    * @details Shared by the capability reply and the tunnel handshake so the two cannot disagree.
-   *          The order is: not enabled, no running service, no permission, no stream.
+   *          The order is: not enabled, no running service, client denied by the host owner, no permission, no stream.
    */
   usb_forwarding_state usb_forwarding_decide(const usb_forwarding_inputs &inputs);
 
@@ -347,8 +355,41 @@ namespace nvhttp {
    * @param perm The permissions of the client that owns the certificate.
    * @param require_stream Whether `usb_forwarding_require_stream` is on.
    * @param has_active_stream Whether the client has a launch/stream session now.
+   * @param client_uuid The paired client the certificate belongs to. Required: the deny list is looked up by it.
    */
-  remote_usb::client_authorization usb_forwarding_client_authorization(crypto::PERM perm, bool require_stream, bool has_active_stream);
+  remote_usb::client_authorization usb_forwarding_client_authorization(crypto::PERM perm, bool require_stream, bool has_active_stream, const std::string &client_uuid);
+
+  /**
+   * @brief The inputs of the capability decision for one client; what the capability route uses.
+   * @details Includes the runtime deny list, so a client that was revoked is told "forbidden" and gets no port or token.
+   */
+  usb_forwarding_inputs usb_forwarding_inputs_for_client(bool service_running, crypto::PERM perm, const std::string &client_uuid, bool has_active_stream);
+
+  /** Most clients the runtime deny list holds. */
+  constexpr std::size_t USB_FORWARDING_MAX_DENIED = 256;
+
+  enum class usb_deny_result {
+    added,
+    already_denied,
+    full,
+  };
+
+  /**
+   * @brief Refuse this client USB forwarding until Apollo restarts or usb_forwarding_allow_client is called.
+   * @details Uuids are compared case-insensitively (paired clients are stored in upper case, so that is the form kept).
+   *          When the list is full, entries of clients that are no longer paired are dropped first.
+   *          Memory only, bounded by USB_FORWARDING_MAX_DENIED. It does not unpair the client and does not
+   *          change its stored permission. The tunnel handshake, its periodic recheck and the capability
+   *          reply all consult it.
+   */
+  usb_deny_result usb_forwarding_deny_client(const std::string &uuid);
+
+  /** Take a client off the deny list; true when it was on it. */
+  bool usb_forwarding_allow_client(const std::string &uuid);
+
+  bool usb_forwarding_client_denied(const std::string &uuid);
+
+  std::vector<std::string> usb_forwarding_denied_clients();
 
   /**
    * @brief Cut every USB forward that belongs to this paired client (by uuid), at once.
@@ -358,7 +399,35 @@ namespace nvhttp {
   void usb_forwarding_revoke_client(const std::string &uuid);
 
   /**
-   * @brief The per-process tunnel token: 32 random bytes as 64 lower-case hex digits, created on first use.
+   * @brief The current tunnel token: 32 random bytes as 64 lower-case hex digits, created on first use.
    */
-  const std::string &usb_forwarding_token();
+  std::string usb_forwarding_token();
+
+  /**
+   * @brief Replace the tunnel token with a new random one. Called each time the tunnel is started.
+   */
+  void usb_forwarding_rotate_token();
+
+#ifdef _WIN32
+  /**
+   * @brief The object the USB control pipe talks to: status, live start/stop of the tunnel, revoking one client.
+   * @details It reads and changes the same state as the HTTPS handlers and takes the same locks. Windows only.
+   */
+  std::unique_ptr<remote_usb::usb_control_backend> make_usb_control_backend();
+
+  /**
+   * @brief Start the control pipe when `usb_forwarding_control` is enabled; what nvhttp::start() calls.
+   * @param backend The object the pipe talks to; must outlive the pipe.
+   * @param base Settings for the pipe; an empty name selects the production name, which carries the main port.
+   * @return The running pipe, or null when the key is off (nothing is created) or the pipe cannot be started.
+   */
+  std::unique_ptr<remote_usb::usb_control_pipe> start_usb_control(remote_usb::usb_control_backend &backend, remote_usb::usb_control_pipe_config base = {});
+
+  /**
+   * @brief Build the settings of a tunnel start: port check, credentials and a NEW token.
+   * @param failure Set to port_refused when the configured port is out of range or collides with a port this host uses.
+   * @return The settings, or nothing when the port is refused. Rotates the token each time it succeeds.
+   */
+  std::optional<remote_usb::reverse_tunnel_config> make_usb_tunnel_config(remote_usb::start_failure &failure);
+#endif
 }  // namespace nvhttp

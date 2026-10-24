@@ -26,6 +26,15 @@ namespace crypto {
     _certs.clear();
   }
 
+  std::vector<p_named_cert_t> cert_chain_t::list() const {
+    std::vector<p_named_cert_t> result;
+    result.reserve(_certs.size());
+    for (const auto &entry : _certs) {
+      result.push_back(entry.first);
+    }
+    return result;
+  }
+
   static int openssl_verify_cb(int ok, X509_STORE_CTX *ctx) {
     int err_code = X509_STORE_CTX_get_error(ctx);
 
