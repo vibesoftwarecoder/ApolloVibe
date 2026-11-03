@@ -85,6 +85,7 @@ namespace config {
     } vaapi;
 
     std::string capture;
+    std::string capture_window;  ///< Windows: stream this one window (matched by title) instead of a display. Empty = off.
     std::string encoder;
     std::string adapter_name;
     std::string output_name;

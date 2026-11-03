@@ -494,6 +494,7 @@ namespace config {
     },  // vaapi
 
     {},  // capture
+    {},  // capture_window
     {},  // encoder
     {},  // adapter_name
     {},  // output_name
@@ -1201,6 +1202,7 @@ namespace config {
     bool_f(vars, "vaapi_strict_rc_buffer", video.vaapi.strict_rc_buffer);
 
     string_f(vars, "capture", video.capture);
+    string_f(vars, "capture_window", video.capture_window);
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "output_name", video.output_name);
