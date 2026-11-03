@@ -7,6 +7,7 @@
 #include <csignal>
 #include <fstream>
 #include <iostream>
+#include <optional>
 
 // local includes
 #include "confighttp.h"
@@ -26,9 +27,68 @@
 #ifdef _WIN32
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
+
+  // after the project headers, so winsock2.h is always included before windows.h
+  #include <sddl.h>
 #endif
 
 #define PROBE_DISPLAY_UUID "38F72B96-B00C-4F21-8B6C-E1BFF1602B0E"
+
+#ifdef _WIN32
+namespace {
+  /**
+   * Serializes the temporary "Probe" display across every Apollo on this machine.
+   *
+   * The console Apollo and each MultiSeat seat's Apollo share one SudoVDA driver and one fixed probe GUID,
+   * so two starting together could create or remove each other's probe display. If the wait fails or times
+   * out, startup carries on without the lock: a late encoder probe is worse than a rare overlap.
+   */
+  class ProbeDisplayLock {
+  public:
+    ProbeDisplayLock() {
+      // Seats run under other accounts, and the default DACL (owner, SYSTEM, Administrators) would lock them
+      // out. Everyone gets SYNCHRONIZE | MUTEX_MODIFY_STATE and nothing more.
+      PSECURITY_DESCRIPTOR sd = nullptr;
+      SECURITY_ATTRIBUTES sa {sizeof(sa), nullptr, FALSE};
+      if (ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x100001;;;WD)", SDDL_REVISION_1, &sd, nullptr)) {
+        sa.lpSecurityDescriptor = sd;
+      }
+      mutex = CreateMutexW(&sa, FALSE, L"Global\\ApolloVibeProbeDisplay");
+      if (sd) {
+        LocalFree(sd);
+      }
+      if (!mutex) {
+        BOOST_LOG(warning) << "Could not create the probe display lock (error "sv << GetLastError() << "); continuing without it"sv;
+        return;
+      }
+
+      // WAIT_ABANDONED means the previous owner died holding it, possibly mid-probe. We own it now,
+      // and the stale-display cleanup that follows is what deals with what it left.
+      auto waited = WaitForSingleObject(mutex, 20000);
+      held = waited == WAIT_OBJECT_0 || waited == WAIT_ABANDONED;
+      if (!held) {
+        BOOST_LOG(warning) << "Timed out waiting for another Apollo's probe display; continuing without the lock"sv;
+      }
+    }
+
+    ~ProbeDisplayLock() {
+      if (mutex) {
+        if (held) {
+          ReleaseMutex(mutex);
+        }
+        CloseHandle(mutex);
+      }
+    }
+
+    ProbeDisplayLock(const ProbeDisplayLock &) = delete;
+    ProbeDisplayLock &operator=(const ProbeDisplayLock &) = delete;
+
+  private:
+    HANDLE mutex = nullptr;
+    bool held = false;
+  };
+}  // namespace
+#endif
 
 extern "C" {
 #include "rswrapper.h"
@@ -356,15 +416,29 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "No gamepad input is available"sv;
   }
 
+#ifdef _WIN32
+  // Held from the stale-display cleanup to the end of probing, see ProbeDisplayLock.
+  std::optional<ProbeDisplayLock> probe_lock;
+  probe_lock.emplace();
+
+  std::string probe_uuid_str = PROBE_DISPLAY_UUID;
+  auto probe_uuid = uuid_util::uuid_t::parse(probe_uuid_str);
+  auto *probe_guid = (GUID *) (void *) &probe_uuid;
+
+  // A Probe display left by an earlier run (a process killed between creating it and removing it, or a
+  // removal that failed) is an active display, so it makes the first probe below pass and the cleanup
+  // after the probe never runs. It then stays for as long as any Apollo keeps pinging the driver's
+  // watchdog. Remove it before probing. This fails harmlessly when there is none.
+  if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK && VDISPLAY::removeVirtualDisplay(*probe_guid)) {
+    BOOST_LOG(info) << "Removed a temporary probe display left behind by an earlier run"sv;
+  }
+#endif
+
   if (video::probe_encoders(platf::input_desktop_wait_context_e::none)) {
 #ifdef _WIN32
     bool allow_probing = video::allow_encoder_probing();
     // Create a temporary virtual display for encoder capability probing
     if (proc::vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK) {
-      std::string probe_uuid_str = PROBE_DISPLAY_UUID;
-      auto probe_uuid = uuid_util::uuid_t::parse(probe_uuid_str);
-      auto* probe_guid = (GUID*)(void*)&probe_uuid;
-
       BOOST_LOG(info) << "Creating a temporary virtual display to probe for encoders..."sv;
 
       if (!config::video.adapter_name.empty()) {
@@ -391,7 +465,15 @@ int main(int argc, char *argv[]) {
         }
       }
 
-      VDISPLAY::removeVirtualDisplay(*probe_guid);
+      // The result used to be ignored, so a failed removal left the display behind with nothing in the log.
+      bool probe_removed = VDISPLAY::removeVirtualDisplay(*probe_guid);
+      if (!probe_removed) {
+        std::this_thread::sleep_for(200ms);
+        probe_removed = VDISPLAY::removeVirtualDisplay(*probe_guid);
+      }
+      if (!probe_removed) {
+        BOOST_LOG(warning) << "Could not remove the temporary probe display; the next Apollo to start will remove it"sv;
+      }
     } else if (!allow_probing) {
       BOOST_LOG(error) << "Video failed to find working encoder: probe failed and virtual display driver isn't initialized"sv;
     }
@@ -399,6 +481,10 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Video failed to find working encoder: probing failed."sv;
 #endif
   }
+
+#ifdef _WIN32
+  probe_lock.reset();
+#endif
 
   if (http::init()) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
