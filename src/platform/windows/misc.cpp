@@ -273,6 +273,27 @@ namespace platf {
     return hDesk;
   }
 
+  /**
+   * @brief Whether the calling thread is already on the same desktop as `desktop`.
+   */
+  static bool thread_is_on_desktop(HDESK desktop) {
+    auto current = GetThreadDesktop(GetCurrentThreadId());
+    if (!current) {
+      return false;
+    }
+    if (current == desktop) {
+      return true;
+    }
+
+    auto name_of = [](HDESK handle, wchar_t *name, DWORD count) {
+      DWORD needed = 0;
+      return GetUserObjectInformationW(handle, UOI_NAME, name, count * sizeof(wchar_t), &needed) != 0;
+    };
+    wchar_t current_name[256];
+    wchar_t desktop_name[256];
+    return name_of(current, current_name, 256) && name_of(desktop, desktop_name, 256) && _wcsicmp(current_name, desktop_name) == 0;
+  }
+
   HDESK syncThreadDesktop(DWORD *last_error) {
     DWORD err = ERROR_SUCCESS;
     auto hDesk = open_input_desktop(err);
@@ -287,6 +308,18 @@ namespace platf {
 
     if (!SetThreadDesktop(hDesk)) {
       err = GetLastError();
+
+      // A thread that owns windows or hooks cannot change desktop at all and gets ERROR_BUSY for any request. The
+      // Windows.Graphics.Capture path leaves such objects on its capture thread, so every later display init on
+      // that thread used to log an error. If the thread is already on the input desktop there is nothing to change.
+      if (err == ERROR_BUSY && thread_is_on_desktop(hDesk)) {
+        CloseDesktop(hDesk);
+        if (last_error) {
+          *last_error = ERROR_SUCCESS;
+        }
+        return GetThreadDesktop(GetCurrentThreadId());
+      }
+
       BOOST_LOG(error) << "Failed to sync desktop to thread [0x"sv << util::hex(err).to_string_view() << ']';
 
       // The assignment failed, so this handle is ours to release and the thread keeps whatever

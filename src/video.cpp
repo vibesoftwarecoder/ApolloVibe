@@ -1138,6 +1138,24 @@ namespace video {
   }
 
   /**
+   * @brief Whether a vanished capture window has been missing for longer than capture_window_wait_timeout.
+   * @details Window capture (capture_window) only. Retrying forever would leave the client frozen on its last
+   *          picture, so the caller ends the stream when this returns true.
+   * @param since When the capture started trying to bring the window back.
+   */
+  bool window_capture_gave_up(std::chrono::steady_clock::time_point since) {
+    if (config::video.capture_window.empty() || config::video.capture_window_wait_timeout <= 0) {
+      return false;
+    }
+    if (std::chrono::steady_clock::now() - since <= std::chrono::seconds(config::video.capture_window_wait_timeout)) {
+      return false;
+    }
+
+    BOOST_LOG(warning) << "Window capture: the window did not come back within "sv << config::video.capture_window_wait_timeout << " s, ending the stream"sv;
+    return true;
+  }
+
+  /**
    * @brief Update the list of display names before or during a stream.
    * @details This will attempt to keep `current_display_index` pointing at the same display.
    * @param dev_type The encoder device type used for display lookup.
@@ -1430,6 +1448,10 @@ namespace video {
               std::this_thread::sleep_for(20ms);
             }
 
+            // Window capture (capture_window): the window can be gone for good. Retrying forever would leave the
+            // client frozen on its last picture, so give up after capture_window_wait_timeout seconds. Leaving this
+            // thread stops every session that listens to it (see the fail guard above), which ends the stream.
+            const auto reinit_started = std::chrono::steady_clock::now();
             while (capture_ctx_queue->running()) {
               // Release the display before reenumerating displays, since some capture backends
               // only support a single display session per device/application.
@@ -1447,6 +1469,10 @@ namespace video {
               reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
               if (disp) {
                 proc::proc.display_name = display_names[display_p];
+                break;
+              }
+
+              if (window_capture_gave_up(reinit_started)) {
                 break;
               }
             }
@@ -2265,6 +2291,7 @@ namespace video {
       synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*ctx)));
     }
 
+    const auto display_wait_started = std::chrono::steady_clock::now();
     while (encode_session_ctx_queue.running()) {
       // Refresh display names since a display removal might have caused the reinitialization
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
@@ -2277,6 +2304,10 @@ namespace video {
       // reset_display() will sleep between retries
       reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], synced_session_ctxs.front()->config);
       if (disp) {
+        break;
+      }
+
+      if (window_capture_gave_up(display_wait_started)) {
         break;
       }
     }

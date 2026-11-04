@@ -18,6 +18,12 @@
 #include "misc.h"
 #include "src/logging.h"
 
+// system includes that need windows.h from the headers above
+#include <dwmapi.h>
+
+#include <cwctype>
+#include <string>
+
 namespace platf {
   using namespace std::literals;
 }
@@ -61,6 +67,86 @@ constexpr auto __mingw_uuidof<winrt::IDirect3DDxgiInterfaceAccess>() -> GUID con
 #endif
 
 namespace platf::dxgi {
+  namespace {
+    struct window_search_t {
+      std::wstring wanted;  // lower case
+      HWND exact {nullptr};
+      HWND partial {nullptr};
+    };
+
+    std::wstring lower_copy(std::wstring text) {
+      for (auto &c : text) {
+        c = (wchar_t) std::towlower(c);
+      }
+      return text;
+    }
+
+    BOOL CALLBACK find_window_proc(HWND hwnd, LPARAM lparam) {
+      auto *search = reinterpret_cast<window_search_t *>(lparam);
+
+      DWORD pid = 0;
+      GetWindowThreadProcessId(hwnd, &pid);
+      if (pid == GetCurrentProcessId() || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER) != nullptr ||
+          (GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)) {
+        return TRUE;
+      }
+
+      wchar_t title[512];
+      int length = GetWindowTextW(hwnd, title, 512);
+      if (length <= 0) {
+        return TRUE;
+      }
+
+      auto text = lower_copy(std::wstring(title, length));
+      if (text == search->wanted) {
+        search->exact = hwnd;
+        return FALSE;
+      }
+      if (!search->partial && text.find(search->wanted) != std::wstring::npos) {
+        search->partial = hwnd;
+      }
+      return TRUE;
+    }
+
+    /**
+     * @brief Bring the captured window in front of the other windows so the client's input lands on it.
+     * @details Windows delivers a click to the window under the pointer, and window capture still shows a covered
+     *          window's own picture, so without this a window hidden behind another one looks fine on the client
+     *          while every click and key press goes to the window on top. A process that is not in the foreground
+     *          cannot normally take it, so this borrows the foreground thread's input state for the call. The window
+     *          is raised, not made topmost, so another application's topmost window can still cover it.
+     */
+    void raise_window(HWND window) {
+      DWORD foreground_thread = 0;
+      if (HWND foreground = GetForegroundWindow()) {
+        foreground_thread = GetWindowThreadProcessId(foreground, nullptr);
+      }
+      DWORD this_thread = GetCurrentThreadId();
+      bool attached = foreground_thread != 0 && foreground_thread != this_thread && AttachThreadInput(this_thread, foreground_thread, TRUE);
+
+      auto positioned = SetWindowPos(window, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+      auto position_error = positioned ? 0 : GetLastError();
+      auto at_top = BringWindowToTop(window);
+      auto in_front = SetForegroundWindow(window);
+
+      if (attached) {
+        AttachThreadInput(this_thread, foreground_thread, FALSE);
+      }
+
+      BOOST_LOG(info) << "Window capture: raised the window [attached "sv << attached << ", positioned "sv << (positioned != 0) << " (error "sv << position_error << "), top "sv << (at_top != 0) << ", foreground "sv << (in_front != 0) << ']';
+    }
+
+    /**
+     * @brief Find the top-level window the user chose: an exact title match first, then a title containing the text.
+     */
+    HWND find_capture_window(const std::string &title) {
+      window_search_t search;
+      search.wanted = lower_copy(from_utf8(title));
+      EnumWindows(find_window_proc, reinterpret_cast<LPARAM>(&search));
+      return search.exact ? search.exact : search.partial;
+    }
+  }  // namespace
+
   wgc_capture_t::wgc_capture_t() {
     InitializeConditionVariable(&frame_present_cv);
   }
@@ -108,8 +194,45 @@ namespace platf::dxgi {
     display->output->GetDesc(&output_desc);
 
     auto monitor_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-    if (monitor_factory == nullptr ||
-        FAILED(status = monitor_factory->CreateForMonitor(output_desc.Monitor, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
+
+    window = nullptr;
+    window_raised = false;
+    if (!config::video.capture_window.empty()) {
+      window = find_capture_window(config::video.capture_window);
+      if (!window) {
+        BOOST_LOG(error) << "Window capture: no visible window is titled \""sv << config::video.capture_window << "\""sv;
+        return -1;
+      }
+
+      if (IsIconic(window)) {
+        // Windows delivers no frames for a minimized window.
+        BOOST_LOG(warning) << "Window capture: the window is minimized, restoring it so it can be captured"sv;
+        ShowWindow(window, SW_SHOWNOACTIVATE);
+        Sleep(300);
+      }
+
+      if (monitor_factory == nullptr ||
+          FAILED(status = monitor_factory->CreateForWindow(window, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
+        BOOST_LOG(error) << "Window capture: failed to capture the window: [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+
+      // The stream is the window's size, and mouse input is mapped onto the window's place on the desktop.
+      auto window_size = item.Size();
+      RECT frame {};
+      if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &frame, sizeof(frame)))) {
+        GetWindowRect(window, &frame);
+      }
+      window_width = window_size.Width;
+      window_height = window_size.Height;
+      display->width = display->width_before_rotation = window_width;
+      display->height = display->height_before_rotation = window_height;
+      display->display_rotation = DXGI_MODE_ROTATION_IDENTITY;
+      display->offset_x = frame.left - GetSystemMetrics(SM_XVIRTUALSCREEN);
+      display->offset_y = frame.top - GetSystemMetrics(SM_YVIRTUALSCREEN);
+      BOOST_LOG(info) << "Window capture: streaming the window titled \""sv << config::video.capture_window << "\" ["sv << window_width << 'x' << window_height << " at "sv << display->offset_x << ',' << display->offset_y << ']';
+    } else if (monitor_factory == nullptr ||
+               FAILED(status = monitor_factory->CreateForMonitor(output_desc.Monitor, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
       BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire display: [0x"sv << util::hex(status).to_string_view() << ']';
       return -1;
     }
@@ -197,6 +320,10 @@ namespace platf::dxgi {
     if (produced_frame == nullptr && SleepConditionVariableSRW(&frame_present_cv, &frame_lock, timeout.count(), 0) == 0) {
       ReleaseSRWLockExclusive(&frame_lock);
       if (GetLastError() == ERROR_TIMEOUT) {
+        if (window && !IsWindow(window)) {
+          BOOST_LOG(info) << "Window capture: the window was closed"sv;
+          return capture_e::reinit;
+        }
         return capture_e::timeout;
       } else {
         return capture_e::error;
@@ -209,6 +336,21 @@ namespace platf::dxgi {
     ReleaseSRWLockExclusive(&frame_lock);
     if (consumed_frame == nullptr) {  // spurious wakeup
       return capture_e::timeout;
+    }
+
+    if (window) {
+      // The frame pool keeps its original size when the window is resized, so compare the content size.
+      auto content = consumed_frame.ContentSize();
+      if (content.Width != window_width || content.Height != window_height) {
+        BOOST_LOG(info) << "Window capture: the window changed size ["sv << window_width << 'x' << window_height << " -> "sv << content.Width << 'x' << content.Height << ']';
+        return capture_e::reinit;
+      }
+
+      // Only once a real stream is pulling frames, never for the encoder probes at startup.
+      if (!window_raised && config::video.capture_window_raise) {
+        window_raised = true;
+        raise_window(window);
+      }
     }
 
     auto capture_access = consumed_frame.Surface().as<winrt::IDirect3DDxgiInterfaceAccess>();
