@@ -499,10 +499,13 @@ namespace video {
   int start_capture_sync(capture_thread_sync_ctx_t &ctx);
   void end_capture_sync(capture_thread_sync_ctx_t &ctx);
   int start_capture_async(capture_thread_async_ctx_t &ctx);
+  int start_capture_window_async(capture_thread_async_ctx_t &ctx);
   void end_capture_async(capture_thread_async_ctx_t &ctx);
 
   // Keep a reference counter to ensure the capture thread only runs when other threads have a reference to the capture thread
   auto capture_thread_async = safe::make_shared<capture_thread_async_ctx_t>(start_capture_async, end_capture_async);
+  // Streams that capture a window get a capture thread of their own, so they never share (or disturb) the display one.
+  auto capture_thread_window_async = safe::make_shared<capture_thread_async_ctx_t>(start_capture_window_async, end_capture_async);
   auto capture_thread_sync = safe::make_shared<capture_thread_sync_ctx_t>(start_capture_sync, end_capture_sync);
 
 #ifdef _WIN32
@@ -1226,7 +1229,8 @@ namespace video {
     std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue,
     sync_util::sync_t<std::weak_ptr<platf::display_t>> &display_wp,
     safe::signal_t &reinit_event,
-    const encoder_t &encoder
+    const encoder_t &encoder,
+    bool window_source
   ) {
     std::vector<capture_ctx_t> capture_ctxs;
 
@@ -1242,7 +1246,11 @@ namespace video {
       }
     });
 
-    auto switch_display_event = mail::man->event<int>(mail::switch_display);
+    // The window thread has its own display name and switch event, so it cannot read or move the main capture's.
+    std::string window_display_name;
+    std::string &shared_display_name = window_source ? window_display_name : proc::proc.display_name;
+    auto private_mail = std::make_shared<safe::mail_raw_t>();
+    auto switch_display_event = window_source ? private_mail->event<int>(mail::switch_display) : mail::man->event<int>(mail::switch_display);
 
     // Wait for the initial capture context or a request to stop the queue
     auto initial_capture_ctx = capture_ctx_queue->pop();
@@ -1259,8 +1267,8 @@ namespace video {
     await_input_desktop_for_capture(platf::input_desktop_wait_context_e::capture, [&]() {
       return !capture_ctx_queue->running() || !capture_ctxs.front().images->running();
     });
-    if (!proc::proc.display_name.empty()) {
-      disp = platf::display(encoder.platform_formats->dev_type, proc::proc.display_name, capture_ctxs.front().config);
+    if (!shared_display_name.empty()) {
+      disp = platf::display(encoder.platform_formats->dev_type, shared_display_name, capture_ctxs.front().config);
     }
     if (!disp) {
       // Get all the monitor names now, rather than at boot, to
@@ -1268,7 +1276,7 @@ namespace video {
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
       disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
       if (disp) {
-        proc::proc.display_name = display_names[display_p];
+        shared_display_name = display_names[display_p];
       } else {
         return;
       }
@@ -1462,7 +1470,7 @@ namespace video {
               disp.reset();
 
               // Refresh display names since a display removal might have caused the reinitialization
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, proc::proc.display_name);
+              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, shared_display_name);
 
               // Process any pending display switch with the new list of displays
               if (switch_display_event->peek()) {
@@ -1472,7 +1480,7 @@ namespace video {
               // reset_display() will sleep between retries
               reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
               if (disp) {
-                proc::proc.display_name = display_names[display_p];
+                shared_display_name = display_names[display_p];
                 break;
               }
 
@@ -2471,7 +2479,7 @@ namespace video {
       shutdown_event->raise(true);
     });
 
-    auto ref = capture_thread_async.ref();
+    auto ref = (capture_window_for(config).empty() ? capture_thread_async : capture_thread_window_async).ref();
     if (!ref) {
       return;
     }
@@ -2548,6 +2556,12 @@ namespace video {
     void *channel_data
   ) {
     auto idr_events = mail->event<bool>(mail::idr);
+
+    if (!config.capture_window.empty() && !(chosen_encoder->flags & PARALLEL_ENCODING)) {
+      // The synchronous capture path serves one display for every session, so it cannot add a window stream.
+      BOOST_LOG(error) << "Capturing a window for a stream needs a hardware encoder that supports parallel encoding"sv;
+      return;
+    }
 
     idr_events->raise(true);
     if (chosen_encoder->flags & PARALLEL_ENCODING) {
@@ -3090,7 +3104,7 @@ namespace video {
   }
 #endif
 
-  int start_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
+  int start_capture_thread(capture_thread_async_ctx_t &capture_thread_ctx, bool window_source) {
     capture_thread_ctx.encoder_p = chosen_encoder;
     capture_thread_ctx.reinit_event.reset();
 
@@ -3101,10 +3115,19 @@ namespace video {
       capture_thread_ctx.capture_ctx_queue,
       std::ref(capture_thread_ctx.display_wp),
       std::ref(capture_thread_ctx.reinit_event),
-      std::ref(*capture_thread_ctx.encoder_p)
+      std::ref(*capture_thread_ctx.encoder_p),
+      window_source
     };
 
     return 0;
+  }
+
+  int start_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
+    return start_capture_thread(capture_thread_ctx, false);
+  }
+
+  int start_capture_window_async(capture_thread_async_ctx_t &capture_thread_ctx) {
+    return start_capture_thread(capture_thread_ctx, true);
   }
 
   void end_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
