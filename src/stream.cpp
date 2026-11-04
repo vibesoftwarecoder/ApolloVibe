@@ -357,6 +357,31 @@ namespace stream {
     control_server_t control_server;
   };
 
+  struct session_t;
+
+  /**
+   * @brief Everything one video stream needs on its own: where it sends, how it numbers and encrypts packets,
+   *        and the events that ask it for a new keyframe. A session owns one of these today.
+   * @details Encoded packets carry a pointer to their stream, not their session, so the send thread can serve
+   *          more than one stream without a second code path.
+   */
+  struct video_stream_t {
+    session_t *session {nullptr};
+
+    std::string ping_payload;
+
+    int lowseq;
+    udp::endpoint peer;
+
+    std::optional<crypto::cipher::gcm_t> cipher;
+    std::uint64_t gcm_iv_counter;
+
+    safe::mail_raw_t::event_t<bool> idr_events;
+    safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
+
+    std::unique_ptr<platf::deinit_t> qos;
+  };
+
   struct session_t {
     config_t config;
 
@@ -373,20 +398,7 @@ namespace stream {
 
     boost::asio::ip::address localAddress;
 
-    struct {
-      std::string ping_payload;
-
-      int lowseq;
-      udp::endpoint peer;
-
-      std::optional<crypto::cipher::gcm_t> cipher;
-      std::uint64_t gcm_iv_counter;
-
-      safe::mail_raw_t::event_t<bool> idr_events;
-      safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
-
-      std::unique_ptr<platf::deinit_t> qos;
-    } video;
+    video_stream_t video;
 
     struct {
       crypto::cipher::cbc_t cipher;
@@ -1461,8 +1473,9 @@ namespace stream {
 
       frame_network_latency_logger.first_point_now();
 
-      auto session = (session_t *) packet->channel_data;
-      auto lowseq = session->video.lowseq;
+      auto stream = (video_stream_t *) packet->channel_data;
+      auto session = stream->session;
+      auto lowseq = stream->lowseq;
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
       std::vector<uint8_t> payload_with_replacements;
@@ -1610,10 +1623,10 @@ namespace stream {
 
           frame_fec_latency_logger.first_point_now();
           // If video encryption is enabled, we allocate space for the encryption header before each shard
-          auto shards = fec::encode(current_payload, blocksize, fecPercentage, session->config.minRequiredFecPackets, session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+          auto shards = fec::encode(current_payload, blocksize, fecPercentage, session->config.minRequiredFecPackets, stream->cipher ? sizeof(video_packet_enc_prefix_t) : 0);
           frame_fec_latency_logger.second_point_now_and_log();
 
-          auto peer_address = session->video.peer.address();
+          auto peer_address = stream->peer.address();
           auto batch_info = platf::batched_send_info_t {
             shards.headers.begin(),
             shards.prefixsize,
@@ -1623,7 +1636,7 @@ namespace stream {
             0,
             (uintptr_t) sock.native_handle(),
             peer_address,
-            session->video.peer.port(),
+            stream->peer.port(),
             session->localAddress,
           };
 
@@ -1656,7 +1669,7 @@ namespace stream {
             inspect->packet.frameIndex = packet->frame_index();
 
             // Encrypt this shard if video encryption is enabled
-            if (session->video.cipher) {
+            if (stream->cipher) {
               // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
               // Section 8.2.1. The sequence number is our "invocation" field and the 'V' in the
               // high bytes is the "fixed" field. Because each client provides their own unique
@@ -1665,15 +1678,15 @@ namespace stream {
               //
               // The IV counter is 64 bits long which allows for 2^64 encrypted video packets
               // to be sent to each client before the IV repeats.
-              std::copy_n((uint8_t *) &session->video.gcm_iv_counter, sizeof(session->video.gcm_iv_counter), std::begin(iv));
+              std::copy_n((uint8_t *) &stream->gcm_iv_counter, sizeof(stream->gcm_iv_counter), std::begin(iv));
               iv[11] = 'V';  // Video stream
-              session->video.gcm_iv_counter++;
+              stream->gcm_iv_counter++;
 
               // Encrypt the target buffer in place
               auto *prefix = (video_packet_enc_prefix_t *) shards.prefix(x);
               prefix->frameNumber = packet->frame_index();
               std::copy(std::begin(iv), std::end(iv), prefix->iv);
-              session->video.cipher->encrypt(std::string_view {(char *) inspect, (size_t) blocksize}, prefix->tag, (uint8_t *) inspect, &iv);
+              stream->cipher->encrypt(std::string_view {(char *) inspect, (size_t) blocksize}, prefix->tag, (uint8_t *) inspect, &iv);
             }
 
             if (x - next_shard_to_send + 1 >= send_batch_size ||
@@ -1712,7 +1725,7 @@ namespace stream {
                     shards.blocksize,
                     (uintptr_t) sock.native_handle(),
                     peer_address,
-                    session->video.peer.port(),
+                    stream->peer.port(),
                     session->localAddress,
                   };
 
@@ -1744,7 +1757,7 @@ namespace stream {
           lowseq += shards.size();
         });
 
-        session->video.lowseq = lowseq;
+        stream->lowseq = lowseq;
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);
@@ -2048,7 +2061,7 @@ namespace stream {
     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
-    video::capture(session->mail, session->config.monitor, session);
+    video::capture(session->mail, session->config.monitor, &session->video);
   }
 
   void audioThread(session_t *session) {
@@ -2305,6 +2318,7 @@ namespace stream {
 
     std::shared_ptr<session_t> alloc(config_t &config, rtsp_stream::launch_session_t &launch_session) {
       auto session = std::make_shared<session_t>();
+      session->video.session = session.get();
 
       auto mail = std::make_shared<safe::mail_raw_t>();
 
