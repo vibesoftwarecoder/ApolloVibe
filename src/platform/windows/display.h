@@ -353,6 +353,7 @@ namespace platf::dxgi {
     HWND window {nullptr};
     int window_width {0};
     int window_height {0};
+    bool window_raised {false};  ///< The window was brought to the front for this capture.
 
     void on_frame_arrived(winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &);
 

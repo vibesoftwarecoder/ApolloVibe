@@ -109,6 +109,34 @@ namespace platf::dxgi {
     }
 
     /**
+     * @brief Bring the captured window in front of the other windows so the client's input lands on it.
+     * @details Windows delivers a click to the window under the pointer, and window capture still shows a covered
+     *          window's own picture, so without this a window hidden behind another one looks fine on the client
+     *          while every click and key press goes to the window on top. A process that is not in the foreground
+     *          cannot normally take it, so this borrows the foreground thread's input state for the call. The window
+     *          is raised, not made topmost, so another application's topmost window can still cover it.
+     */
+    void raise_window(HWND window) {
+      DWORD foreground_thread = 0;
+      if (HWND foreground = GetForegroundWindow()) {
+        foreground_thread = GetWindowThreadProcessId(foreground, nullptr);
+      }
+      DWORD this_thread = GetCurrentThreadId();
+      bool attached = foreground_thread != 0 && foreground_thread != this_thread && AttachThreadInput(this_thread, foreground_thread, TRUE);
+
+      auto positioned = SetWindowPos(window, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+      auto position_error = positioned ? 0 : GetLastError();
+      auto at_top = BringWindowToTop(window);
+      auto in_front = SetForegroundWindow(window);
+
+      if (attached) {
+        AttachThreadInput(this_thread, foreground_thread, FALSE);
+      }
+
+      BOOST_LOG(info) << "Window capture: raised the window [attached "sv << attached << ", positioned "sv << (positioned != 0) << " (error "sv << position_error << "), top "sv << (at_top != 0) << ", foreground "sv << (in_front != 0) << ']';
+    }
+
+    /**
      * @brief Find the top-level window the user chose: an exact title match first, then a title containing the text.
      */
     HWND find_capture_window(const std::string &title) {
@@ -168,6 +196,7 @@ namespace platf::dxgi {
     auto monitor_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
 
     window = nullptr;
+    window_raised = false;
     if (!config::video.capture_window.empty()) {
       window = find_capture_window(config::video.capture_window);
       if (!window) {
@@ -315,6 +344,12 @@ namespace platf::dxgi {
       if (content.Width != window_width || content.Height != window_height) {
         BOOST_LOG(info) << "Window capture: the window changed size ["sv << window_width << 'x' << window_height << " -> "sv << content.Width << 'x' << content.Height << ']';
         return capture_e::reinit;
+      }
+
+      // Only once a real stream is pulling frames, never for the encoder probes at startup.
+      if (!window_raised && config::video.capture_window_raise) {
+        window_raised = true;
+        raise_window(window);
       }
     }
 
