@@ -56,6 +56,7 @@ extern "C" {
 #define IDX_REQUEST_IDR_FRAME_STREAM 19
 #define IDX_INVALIDATE_REF_FRAMES_STREAM 20
 #define IDX_STREAM_ENDED 21
+#define IDX_STOP_VIDEO_STREAM 22
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -80,6 +81,7 @@ static const short packetTypes[] = {
   0x3100,  // IDR frame request for one video stream (ApolloVibe protocol extension)
   0x3101,  // Reference frame invalidation for one video stream (ApolloVibe protocol extension)
   0x3102,  // A video stream has ended (ApolloVibe protocol extension, host to client)
+  0x3103,  // Stop one video stream (ApolloVibe protocol extension, client to host)
 };
 
 namespace asio = boost::asio;
@@ -424,6 +426,9 @@ namespace stream {
     video_stream_t video2;
     safe::mail_t mail2;
     safe::mail_raw_t::event_t<bool> video2_shutdown_event;
+
+    // Set when the client asked for the second stream to stop, so the stop is not reported back to it as an error.
+    std::atomic_bool video2_stopped_by_client {false};
 
     struct {
       crypto::cipher::cbc_t cipher;
@@ -1085,6 +1090,23 @@ namespace stream {
 
       if (stream_index == 1 && session->video2.invalidate_ref_frames_events) {
         session->video2.invalidate_ref_frames_events->raise(std::make_pair(first_frame, last_frame));
+      }
+    });
+
+    // The client closed the window of the second stream: stop encoding it. The session and the first stream go on.
+    server->map(packetTypes[IDX_STOP_VIDEO_STREAM], [&](session_t *session, const std::string_view &payload) {
+      std::uint32_t stream_index;
+      if (payload.size() < sizeof(stream_index)) {
+        return;
+      }
+      std::memcpy(&stream_index, payload.data(), sizeof(stream_index));
+      stream_index = util::endian::little(stream_index);
+
+      BOOST_LOG(info) << "The client closed the second video stream"sv;
+
+      if (stream_index == 1 && session->video2_shutdown_event) {
+        session->video2_stopped_by_client = true;
+        session->video2_shutdown_event->raise(true);
       }
     });
 
@@ -2165,8 +2187,8 @@ namespace stream {
     auto fg = util::fail_guard([&]() {
       session->video2_shutdown_event->raise(true);
 
-      // Tell the client, unless the whole session is going away anyway.
-      if (session->state.load(std::memory_order_relaxed) == stream::session::state_e::RUNNING) {
+      // Tell the client, unless the whole session is going away anyway or the client asked for the stop itself.
+      if (!session->video2_stopped_by_client.load() && session->state.load(std::memory_order_relaxed) == stream::session::state_e::RUNNING) {
         send_stream_ended(session, 1, 0);
       }
     });
