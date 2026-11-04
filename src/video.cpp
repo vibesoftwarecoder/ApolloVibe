@@ -1277,6 +1277,22 @@ namespace video {
       disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
       if (disp) {
         shared_display_name = display_names[display_p];
+      } else if (window_source) {
+        // A window stream can start while the desktop is changing mode, and then no monitor passes the duplication
+        // test for a moment. That is not the window's fault, so keep trying until the window timeout runs out.
+        const auto retry_started = std::chrono::steady_clock::now();
+        while (!disp) {
+          if (!capture_ctx_queue->running() || !capture_ctxs.front().images->running() ||
+              window_capture_gave_up(capture_ctxs.front().config, retry_started)) {
+            return;
+          }
+
+          std::this_thread::sleep_for(500ms);
+
+          refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+          disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
+        }
+        shared_display_name = display_names[display_p];
       } else {
         return;
       }
