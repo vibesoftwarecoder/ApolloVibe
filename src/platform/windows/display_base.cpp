@@ -994,7 +994,7 @@ namespace platf {
    * @param hwdevice_type enables possible use of hardware encoder
    */
   std::shared_ptr<display_t> display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
-    if (!config::video.capture_window.empty()) {
+    if (!video::capture_window_for(config).empty()) {
       // One window was chosen. Only Windows.Graphics.Capture can capture a window, and there is no
       // fallback: duplicating the whole display instead would stream everything else on the screen
       // to a client that was only meant to see this window.

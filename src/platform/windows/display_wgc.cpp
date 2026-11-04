@@ -197,10 +197,11 @@ namespace platf::dxgi {
 
     window = nullptr;
     window_raised = false;
-    if (!config::video.capture_window.empty()) {
-      window = find_capture_window(config::video.capture_window);
+    const auto &window_title = ::video::capture_window_for(config);
+    if (!window_title.empty()) {
+      window = find_capture_window(window_title);
       if (!window) {
-        BOOST_LOG(error) << "Window capture: no visible window is titled \""sv << config::video.capture_window << "\""sv;
+        BOOST_LOG(error) << "Window capture: no visible window is titled \""sv << window_title << "\""sv;
         return -1;
       }
 
@@ -230,7 +231,7 @@ namespace platf::dxgi {
       display->display_rotation = DXGI_MODE_ROTATION_IDENTITY;
       display->offset_x = frame.left - GetSystemMetrics(SM_XVIRTUALSCREEN);
       display->offset_y = frame.top - GetSystemMetrics(SM_YVIRTUALSCREEN);
-      BOOST_LOG(info) << "Window capture: streaming the window titled \""sv << config::video.capture_window << "\" ["sv << window_width << 'x' << window_height << " at "sv << display->offset_x << ',' << display->offset_y << ']';
+      BOOST_LOG(info) << "Window capture: streaming the window titled \""sv << window_title << "\" ["sv << window_width << 'x' << window_height << " at "sv << display->offset_x << ',' << display->offset_y << ']';
     } else if (monitor_factory == nullptr ||
                FAILED(status = monitor_factory->CreateForMonitor(output_desc.Monitor, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
       BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire display: [0x"sv << util::hex(status).to_string_view() << ']';

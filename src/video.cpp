@@ -1137,14 +1137,18 @@ namespace video {
     }
   }
 
+  const std::string &capture_window_for(const config_t &config) {
+    return config.capture_window.empty() ? config::video.capture_window : config.capture_window;
+  }
+
   /**
    * @brief Whether a vanished capture window has been missing for longer than capture_window_wait_timeout.
    * @details Window capture (capture_window) only. Retrying forever would leave the client frozen on its last
    *          picture, so the caller ends the stream when this returns true.
    * @param since When the capture started trying to bring the window back.
    */
-  bool window_capture_gave_up(std::chrono::steady_clock::time_point since) {
-    if (config::video.capture_window.empty() || config::video.capture_window_wait_timeout <= 0) {
+  bool window_capture_gave_up(const config_t &config, std::chrono::steady_clock::time_point since) {
+    if (capture_window_for(config).empty() || config::video.capture_window_wait_timeout <= 0) {
       return false;
     }
     if (std::chrono::steady_clock::now() - since <= std::chrono::seconds(config::video.capture_window_wait_timeout)) {
@@ -1472,7 +1476,7 @@ namespace video {
                 break;
               }
 
-              if (window_capture_gave_up(reinit_started)) {
+              if (window_capture_gave_up(capture_ctxs.front().config, reinit_started)) {
                 break;
               }
             }
@@ -2307,7 +2311,7 @@ namespace video {
         break;
       }
 
-      if (window_capture_gave_up(display_wait_started)) {
+      if (window_capture_gave_up(synced_session_ctxs.front()->config, display_wait_started)) {
         break;
       }
     }

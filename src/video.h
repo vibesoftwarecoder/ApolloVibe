@@ -49,7 +49,15 @@ namespace video {
 
     int encodingFramerate; // Requested display framerate
     bool input_only;
+
+    std::string capture_window;  // Windows: capture this window (by title) for this stream. Empty = the capture_window setting.
   };
+
+  /**
+   * @brief The window a stream captures: its own choice if it has one, otherwise the capture_window setting.
+   * @return The window title, or an empty string when the stream captures a display.
+   */
+  const std::string &capture_window_for(const config_t &config);
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);
   platf::pix_fmt_e map_pix_fmt(AVPixelFormat fmt);
