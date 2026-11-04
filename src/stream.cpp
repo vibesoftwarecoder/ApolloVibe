@@ -2371,6 +2371,9 @@ namespace stream {
 
     int start(session_t &session, const std::string &addr_string) {
       session.input = input::alloc(session.mail);
+      if (session.config.monitor2) {
+        input::attach_second_stream(session.input, session.mail2);
+      }
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {

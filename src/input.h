@@ -25,6 +25,11 @@ namespace input {
 
   std::shared_ptr<input_t> alloc(safe::mail_t mail);
 
+  /**
+   * @brief Let pointer input also target the second video stream, whose touch port arrives on mail2.
+   */
+  void attach_second_stream(std::shared_ptr<input_t> &input, safe::mail_t mail2);
+
   struct touch_port_t: public platf::touch_port_t {
     int env_width, env_height;
 

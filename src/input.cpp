@@ -37,6 +37,17 @@ using namespace std::literals;
 
 namespace input {
 
+  // ApolloVibe protocol extension: the client says which video stream its absolute pointer positions belong to,
+  // so they are scaled for that stream's picture. Sent whenever the target changes.
+  constexpr std::uint32_t AP_STREAM_TARGET_MAGIC = 0x8000AB10;
+
+#pragma pack(push, 1)
+  struct stream_target_packet_t {
+    NV_INPUT_HEADER header;
+    std::uint32_t streamIndex;  // little endian
+  };
+#pragma pack(pop)
+
   constexpr auto MAX_GAMEPADS = std::min((std::size_t) platf::MAX_GAMEPADS, sizeof(std::int16_t) * 8);
 #define DISABLE_LEFT_BUTTON_DELAY ((thread_pool_util::ThreadPool::task_id_t) 0x01)
 #define ENABLE_LEFT_BUTTON_DELAY nullptr
@@ -183,6 +194,12 @@ namespace input {
 
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;
     platf::feedback_queue_t feedback_queue;
+
+    // The second video stream has its own touch port. Absolute pointer input is scaled for the stream the client
+    // last named with a stream target packet (0 = the first).
+    safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event2;
+    input::touch_port_t touch_port2 {{0, 0, 0, 0}, 0, 0, 1.0f};
+    int pointer_stream {0};
 
     std::list<std::vector<uint8_t>> input_queue;
     std::mutex input_queue_lock;
@@ -451,6 +468,13 @@ namespace input {
   }
 
   /**
+   * @brief The touch port of the video stream the pointer currently targets.
+   */
+  input::touch_port_t &active_touch_port(std::shared_ptr<input_t> &input) {
+    return input->pointer_stream == 1 ? input->touch_port2 : input->touch_port;
+  }
+
+  /**
    * @brief Converts client coordinates on the specified surface into screen coordinates.
    * @param input The input context.
    * @param val The cartesian coordinate pair to convert.
@@ -458,8 +482,8 @@ namespace input {
    * @return The host-relative coordinate pair if a touchport is available.
    */
   std::optional<std::pair<float, float>> client_to_touchport(std::shared_ptr<input_t> &input, const std::pair<float, float> &val, const std::pair<float, float> &size) {
-    auto &touch_port_event = input->touch_port_event;
-    auto &touch_port = input->touch_port;
+    auto &touch_port_event = input->pointer_stream == 1 ? input->touch_port_event2 : input->touch_port_event;
+    auto &touch_port = active_touch_port(input);
     if (touch_port_event->peek()) {
       touch_port = *touch_port_event->pop();
     }
@@ -516,6 +540,16 @@ namespace input {
     return {multiply_polar_by_cartesian_scalar(major, angle, scalar), multiply_polar_by_cartesian_scalar(minor, angle + (M_PI / 2), scalar)};
   }
 
+  void passthrough(std::shared_ptr<input_t> &input, stream_target_packet_t *packet) {
+    auto stream_index = util::endian::little(packet->streamIndex);
+    auto target = (stream_index == 1 && input->touch_port_event2) ? 1 : 0;
+
+    if (target != input->pointer_stream) {
+      BOOST_LOG(debug) << "Pointer input now targets video stream ["sv << target << ']';
+    }
+    input->pointer_stream = target;
+  }
+
   void passthrough(std::shared_ptr<input_t> &input, PNV_ABS_MOUSE_MOVE_PACKET packet) {
     if (!config::input.mouse) {
       return;
@@ -544,7 +578,7 @@ namespace input {
       return;
     }
 
-    auto &touch_port = input->touch_port;
+    auto &touch_port = active_touch_port(input);
     platf::touch_port_t abs_port {
       touch_port.offset_x,
       touch_port.offset_y,
@@ -885,7 +919,7 @@ namespace input {
       return;
     }
 
-    auto &touch_port = input->touch_port;
+    auto &touch_port = active_touch_port(input);
     platf::touch_port_t abs_port {
       touch_port.offset_x,
       touch_port.offset_y,
@@ -941,7 +975,7 @@ namespace input {
       return;
     }
 
-    auto &touch_port = input->touch_port;
+    auto &touch_port = active_touch_port(input);
     platf::touch_port_t abs_port {
       touch_port.offset_x,
       touch_port.offset_y,
@@ -1530,6 +1564,9 @@ namespace input {
       case MOUSE_MOVE_ABS_MAGIC:
         passthrough(input, (PNV_ABS_MOUSE_MOVE_PACKET) payload);
         break;
+      case AP_STREAM_TARGET_MAGIC:
+        passthrough(input, (stream_target_packet_t *) payload);
+        break;
       case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
       case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
         passthrough(input, (PNV_MOUSE_BUTTON_PACKET) payload);
@@ -1601,6 +1638,7 @@ namespace input {
           }
         case MOUSE_MOVE_REL_MAGIC_GEN5:
         case MOUSE_MOVE_ABS_MAGIC:
+        case AP_STREAM_TARGET_MAGIC:
         case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
         case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
         case SCROLL_MAGIC_GEN5:
@@ -1705,5 +1743,9 @@ namespace input {
                           100ms);
 
     return input;
+  }
+
+  void attach_second_stream(std::shared_ptr<input_t> &input, safe::mail_t mail2) {
+    input->touch_port_event2 = mail2->event<input::touch_port_t>(mail::touch_port);
   }
 }  // namespace input
