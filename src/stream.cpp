@@ -53,6 +53,9 @@ extern "C" {
 #define IDX_SET_CLIPBOARD 16
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 17
 #define IDX_SET_ADAPTIVE_TRIGGERS 18
+#define IDX_REQUEST_IDR_FRAME_STREAM 19
+#define IDX_INVALIDATE_REF_FRAMES_STREAM 20
+#define IDX_STREAM_ENDED 21
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -74,6 +77,9 @@ static const short packetTypes[] = {
   0x3001,  // Set Clipboard (Apollo protocol extension)
   0x3002,  // File transfer nonce request (Apollo protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
+  0x3100,  // IDR frame request for one video stream (ApolloVibe protocol extension)
+  0x3101,  // Reference frame invalidation for one video stream (ApolloVibe protocol extension)
+  0x3102,  // A video stream has ended (ApolloVibe protocol extension, host to client)
 };
 
 namespace asio = boost::asio;
@@ -209,6 +215,14 @@ namespace stream {
     std::uint8_t type_right;
     std::uint8_t left[DS_EFFECT_PAYLOAD_SIZE];
     std::uint8_t right[DS_EFFECT_PAYLOAD_SIZE];
+  };
+
+  // Host to client: one video stream has ended while the session carries on (ApolloVibe protocol extension).
+  struct control_stream_ended_t {
+    control_header_v2 header;
+
+    std::uint32_t streamIndex;
+    std::uint32_t reason;  // 0 = the stream ended (its source went away, or the client never pinged it)
   };
 
   struct control_hdr_mode_t {
@@ -962,6 +976,35 @@ namespace stream {
     return 0;
   }
 
+  /**
+   * @brief Tell the client that one of its video streams ended while the session carries on.
+   * @details Window capture only sends frames when the picture changes, so the client cannot tell a silent
+   *          stream from an ended one. This message is how it learns.
+   */
+  int send_stream_ended(session_t *session, std::uint32_t stream_index, std::uint32_t reason) {
+    if (!session->control.peer) {
+      return -1;
+    }
+
+    control_stream_ended_t plaintext {};
+    plaintext.header.type = packetTypes[IDX_STREAM_ENDED];
+    plaintext.header.payloadLength = sizeof(control_stream_ended_t) - sizeof(control_header_v2);
+    plaintext.streamIndex = util::endian::little(stream_index);
+    plaintext.reason = util::endian::little(reason);
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+
+    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+      BOOST_LOG(warning) << "Couldn't tell the client that video stream ["sv << stream_index << "] ended"sv;
+      return -1;
+    }
+
+    BOOST_LOG(debug) << "Sent stream ended: "sv << stream_index;
+    return 0;
+  }
+
   void controlBroadcastThread(control_server_t *server) {
     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
@@ -1008,6 +1051,41 @@ namespace stream {
         << "lastFrame [" << lastFrame << ']';
 
       session->video.invalidate_ref_frames_events->raise(std::make_pair(firstFrame, lastFrame));
+    });
+
+    // Requests for the second video stream (ApolloVibe protocol extension). They carry the stream index so the
+    // first stream's requests keep their old meaning.
+    server->map(packetTypes[IDX_REQUEST_IDR_FRAME_STREAM], [&](session_t *session, const std::string_view &payload) {
+      std::uint32_t stream_index;
+      if (payload.size() < sizeof(stream_index)) {
+        return;
+      }
+      std::memcpy(&stream_index, payload.data(), sizeof(stream_index));
+      stream_index = util::endian::little(stream_index);
+
+      BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME_STREAM] stream ["sv << stream_index << ']';
+
+      if (stream_index == 1 && session->video2.idr_events) {
+        session->video2.idr_events->raise(true);
+      }
+    });
+
+    server->map(packetTypes[IDX_INVALIDATE_REF_FRAMES_STREAM], [&](session_t *session, const std::string_view &payload) {
+      std::uint32_t request[3];  // stream index, first frame, last frame
+      if (payload.size() < sizeof(request)) {
+        return;
+      }
+      std::memcpy(request, payload.data(), sizeof(request));
+      auto stream_index = util::endian::little(request[0]);
+      std::int64_t first_frame = util::endian::little(request[1]);
+      std::int64_t last_frame = util::endian::little(request[2]);
+
+      BOOST_LOG(debug)
+        << "type [IDX_INVALIDATE_REF_FRAMES_STREAM] stream ["sv << stream_index << "] frames ["sv << first_frame << ", "sv << last_frame << ']';
+
+      if (stream_index == 1 && session->video2.invalidate_ref_frames_events) {
+        session->video2.invalidate_ref_frames_events->raise(std::make_pair(first_frame, last_frame));
+      }
     });
 
     server->map(packetTypes[IDX_INPUT_DATA], [&](session_t *session, const std::string_view &payload) {
@@ -2086,6 +2164,11 @@ namespace stream {
   void videoThread2(session_t *session) {
     auto fg = util::fail_guard([&]() {
       session->video2_shutdown_event->raise(true);
+
+      // Tell the client, unless the whole session is going away anyway.
+      if (session->state.load(std::memory_order_relaxed) == stream::session::state_e::RUNNING) {
+        send_stream_ended(session, 1, 0);
+      }
     });
 
     while_starting_do_nothing(session->state);
