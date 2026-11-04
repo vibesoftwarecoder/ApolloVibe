@@ -380,6 +380,10 @@ namespace stream {
     safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
 
     std::unique_ptr<platf::deinit_t> qos;
+
+    // Last byte of the AES-GCM IV. Two streams share the client's key, so each needs its own value or the
+    // same (key, IV) pair would be used twice.
+    char iv_tag {'V'};
   };
 
   struct session_t {
@@ -391,6 +395,7 @@ namespace stream {
 
     std::thread audioThread;
     std::thread videoThread;
+    std::thread videoThread2;  // Only runs when the client asked for a second video stream.
 
     std::chrono::steady_clock::time_point pingTimeout;
 
@@ -399,6 +404,12 @@ namespace stream {
     boost::asio::ip::address localAddress;
 
     video_stream_t video;
+
+    // The second video stream. It has its own mail so its keyframe, touch-port and shutdown events do not mix with the
+    // first stream's, and a shutdown event of its own so it can end without ending the session.
+    video_stream_t video2;
+    safe::mail_t mail2;
+    safe::mail_raw_t::event_t<bool> video2_shutdown_event;
 
     struct {
       crypto::cipher::cbc_t cipher;
@@ -1249,6 +1260,9 @@ namespace stream {
       }
 
       session->shutdown_event->raise(true);
+      if (session->video2_shutdown_event) {
+        session->video2_shutdown_event->raise(true);
+      }
       session->controlEnd.raise(true);
     }
 
@@ -1679,7 +1693,7 @@ namespace stream {
               // The IV counter is 64 bits long which allows for 2^64 encrypted video packets
               // to be sent to each client before the IV repeats.
               std::copy_n((uint8_t *) &stream->gcm_iv_counter, sizeof(stream->gcm_iv_counter), std::begin(iv));
-              iv[11] = 'V';  // Video stream
+              iv[11] = stream->iv_tag;  // Video stream ('V' for the first, 'W' for the second)
               stream->gcm_iv_counter++;
 
               // Encrypt the target buffer in place
@@ -2064,6 +2078,32 @@ namespace stream {
     video::capture(session->mail, session->config.monitor, &session->video);
   }
 
+  /**
+   * @brief Run the second video stream, when the client asked for one.
+   * @details The first stream's thread ends the whole session when it stops. This one only ends its own stream:
+   *          the session, the first stream and the audio keep running.
+   */
+  void videoThread2(session_t *session) {
+    auto fg = util::fail_guard([&]() {
+      session->video2_shutdown_event->raise(true);
+    });
+
+    while_starting_do_nothing(session->state);
+
+    auto ref = broadcast.ref();
+    // Same UDP port as the first stream; the ping payload tells the two apart.
+    auto error = recv_ping(session, ref, socket_e::video, session->video2.ping_payload, session->video2.peer, config::stream.ping_timeout);
+    if (error < 0) {
+      return;
+    }
+
+    auto address = session->video2.peer.address();
+    session->video2.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video2.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+
+    BOOST_LOG(debug) << "Start capturing the second video stream"sv;
+    video::capture(session->mail2, *session->config.monitor2, &session->video2);
+  }
+
   void audioThread(session_t *session) {
     auto fg = util::fail_guard([&]() {
       session::stop(*session);
@@ -2132,6 +2172,9 @@ namespace stream {
       }
 
       session.shutdown_event->raise(true);
+      if (session.video2_shutdown_event) {
+        session.video2_shutdown_event->raise(true);
+      }
     }
 
     void graceful_stop(session_t& session) {
@@ -2164,6 +2207,9 @@ namespace stream {
       }
 
       session.shutdown_event->raise(true);
+      if (session.video2_shutdown_event) {
+        session.video2_shutdown_event->raise(true);
+      }
       session.controlEnd.raise(true);
     }
 
@@ -2184,6 +2230,10 @@ namespace stream {
 
       BOOST_LOG(debug) << "Waiting for video to end..."sv;
       session.videoThread.join();
+      if (session.videoThread2.joinable()) {
+        BOOST_LOG(debug) << "Waiting for the second video to end..."sv;
+        session.videoThread2.join();
+      }
       BOOST_LOG(debug) << "Waiting for audio to end..."sv;
       session.audioThread.join();
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
@@ -2285,6 +2335,9 @@ namespace stream {
 
       session.audioThread = std::thread {audioThread, &session};
       session.videoThread = std::thread {videoThread, &session};
+      if (session.config.monitor2) {
+        session.videoThread2 = std::thread {videoThread2, &session};
+      }
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
@@ -2353,6 +2406,24 @@ namespace stream {
           false
         };
         session->video.gcm_iv_counter = 0;
+      }
+
+      if (config.monitor2) {
+        session->mail2 = std::make_shared<safe::mail_raw_t>();
+        session->video2_shutdown_event = session->mail2->event<bool>(mail::shutdown);
+        session->video2.session = session.get();
+        session->video2.idr_events = session->mail2->event<bool>(mail::idr);
+        session->video2.invalidate_ref_frames_events = session->mail2->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+        session->video2.lowseq = 0;
+        session->video2.ping_payload = launch_session.av_ping_payload2;
+        session->video2.iv_tag = 'W';
+        if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
+          session->video2.cipher = crypto::cipher::gcm_t {
+            launch_session.gcm_key,
+            false
+          };
+          session->video2.gcm_iv_counter = 0;
+        }
       }
 
       constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);

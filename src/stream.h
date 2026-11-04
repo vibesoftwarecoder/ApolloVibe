@@ -37,6 +37,8 @@ namespace stream {
     uint32_t encryptionFlagsEnabled;
 
     std::optional<int> gcmap;
+
+    std::optional<video::config_t> monitor2;  ///< The second video stream, when the client asked for one.
   };
 
   namespace session {

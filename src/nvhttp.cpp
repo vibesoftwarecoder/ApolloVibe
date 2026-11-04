@@ -422,6 +422,9 @@ namespace nvhttp {
       unsigned char raw_payload[8];
       RAND_bytes(raw_payload, sizeof(raw_payload));
       launch_session->av_ping_payload = util::hex_vec(raw_payload);
+      unsigned char raw_payload2[8];
+      RAND_bytes(raw_payload2, sizeof(raw_payload2));
+      launch_session->av_ping_payload2 = util::hex_vec(raw_payload2);
       RAND_bytes((unsigned char *) &launch_session->control_connect_data, sizeof(launch_session->control_connect_data));
 
       launch_session->iv.resize(16);

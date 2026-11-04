@@ -88,6 +88,7 @@ namespace config {
     std::string capture_window;  ///< Windows: stream this one window (matched by title) instead of a display. Empty = off.
     int capture_window_wait_timeout;  ///< Seconds to wait for a vanished capture window to come back before ending the stream. 0 = wait forever.
     bool capture_window_raise;  ///< Bring the captured window to the front when a stream starts, so input reaches it.
+    bool second_video_stream;  ///< Offer clients a second video stream (SETUP video2) that captures a window. Off by default.
     std::string encoder;
     std::string adapter_name;
     std::string output_name;
