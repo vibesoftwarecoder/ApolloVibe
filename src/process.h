@@ -44,6 +44,14 @@ namespace proc {
 
 #ifdef _WIN32
   extern VDISPLAY::DRIVER_STATUS vDisplayDriverStatus;
+
+  /**
+   * @brief Whether the host can make a virtual display for a second video stream.
+   * @details True on the console when the SudoVDA driver works. False in a remote (RDP) session, which is what a
+   *          MultiSeat seat is: the RDP display driver owns the topology there, so a new display never becomes active.
+   *          Opens the driver if that has not happened yet.
+   */
+  bool second_display_available();
 #endif
 
   typedef config::prep_cmd_t cmd_t;

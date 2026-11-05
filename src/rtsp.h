@@ -37,6 +37,7 @@ namespace rtsp_stream {
     crypto::aes_t iv;
 
     std::string av_ping_payload;
+    std::string av_ping_payload2;  ///< Ping payload of the second video stream (SETUP video2).
     uint32_t control_connect_data;
 
     std::string device_name;

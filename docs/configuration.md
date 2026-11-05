@@ -1098,6 +1098,111 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### second_video_stream
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Offer a client a second video stream in the same session. The client asks for it, and the second stream is
+            either one window of this host, picked by its title, or a whole display that the host makes for it. Windows
+            Graphics Capture takes the window. The display is a SudoVDA virtual display, made when the second stream
+            starts and removed when it ends.
+            <br><br>
+            A window works anywhere the first stream does, including a MultiSeat seat. A whole display needs the
+            console session: the host offers it only when the SudoVDA driver works and the session is not a remote
+            (RDP) session, so a seat gets one stream when a client asks for a display. A client that does not ask is
+            not affected.
+            @note{Needs a client that supports it, such as MoonlightVibe.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            second_video_stream = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### capture_window
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Stream one window of this host as the main picture, instead of a display. The window is matched by its
+            title, ignoring case. An exact match wins over a partial one. Windows only. The second video stream names
+            its own window and does not use this setting.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            (empty, stream a display)
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            capture_window = Notepad
+            @endcode</td>
+    </tr>
+</table>
+
+### capture_window_wait_timeout
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            How many seconds to wait for a captured window to come back after it has gone, before the stream
+            ends. 0 waits forever, which leaves the client on its last picture. Applies to every window stream.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            10
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            capture_window_wait_timeout = 30
+            @endcode</td>
+    </tr>
+</table>
+
+### capture_window_raise
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Bring the captured window to the front when a window stream starts, so the input from the client reaches
+            it and not a window covering it.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            capture_window_raise = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### install_steam_audio_drivers
 
 <table>

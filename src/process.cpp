@@ -102,6 +102,18 @@ namespace proc {
 
     BOOST_LOG(info) << "SudoVDA: driver ready, virtual displays available"sv;
   }
+
+  bool second_display_available() {
+    if (GetSystemMetrics(SM_REMOTESESSION) != 0) {
+      return false;
+    }
+
+    if (vDisplayDriverStatus != VDISPLAY::DRIVER_STATUS::OK) {
+      initVDisplayDriver();
+    }
+
+    return vDisplayDriverStatus == VDISPLAY::DRIVER_STATUS::OK;
+  }
 #endif
 
   class deinit_t: public platf::deinit_t {

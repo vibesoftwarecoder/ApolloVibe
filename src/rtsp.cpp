@@ -27,6 +27,7 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "network.h"
+#include "process.h"
 #include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
@@ -834,6 +835,18 @@ namespace rtsp_stream {
       ss << "a=fmtp:97 surround-params="sv << session.surround_params << std::endl;
     }
 
+    if (config::video.second_video_stream) {
+      // Tells a client that understands it that SETUP streamid=video2 is available.
+      ss << "a=x-ss-video[1].supported:1"sv << std::endl;
+#ifdef _WIN32
+      // The source may also be a whole display made by the host (x-ss-video[1].source = display:...). Only offered
+      // where the host can make one: not on a seat, whose RDP display driver owns the topology.
+      if (proc::second_display_available()) {
+        ss << "a=x-ss-video[1].display:1"sv << std::endl;
+      }
+#endif
+    }
+
     if (config::audio.stream_mic) {
       ss << "m=audio " << net::map_port(stream::MIC_STREAM_PORT) << " RTP/AVP 96" << std::endl;
       ss << "a=rtpmap:96 opus/48000/1"sv << std::endl;
@@ -895,6 +908,9 @@ namespace rtsp_stream {
       port = net::map_port(stream::VIDEO_STREAM_PORT);
     } else if (type == "control"sv) {
       port = net::map_port(stream::CONTROL_PORT);
+    } else if (type == "video2"sv && config::video.second_video_stream) {
+      // The second stream shares the video port; its ping payload is what tells the two apart.
+      port = net::map_port(stream::VIDEO_STREAM_PORT);
     } else if (type == "mic"sv && config::audio.stream_mic) {
       port = net::map_port(stream::MIC_STREAM_PORT);
       session.enable_mic = true;
@@ -924,7 +940,7 @@ namespace rtsp_stream {
       payload_option.content = connect_data.data();
     } else {
       payload_option.option = const_cast<char *>("X-SS-Ping-Payload");
-      payload_option.content = session.av_ping_payload.data();
+      payload_option.content = (type == "video2"sv ? session.av_ping_payload2 : session.av_ping_payload).data();
     }
 
     port_option.next = &payload_option;
@@ -1158,6 +1174,61 @@ namespace rtsp_stream {
 
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
+    }
+
+    // A second video stream, when the client asks for one. It starts from the first stream's codec, range and
+    // chroma settings and brings its own size, frame rate, bitrate and source.
+    if (args.contains("x-ss-video[1].source"sv)) {
+      constexpr auto window_prefix = "window:"sv;
+      constexpr auto display_prefix = "display:"sv;
+      auto source = args.at("x-ss-video[1].source"sv);
+
+      const bool window_source = source.starts_with(window_prefix) && source.size() > window_prefix.size();
+      bool display_source = source.starts_with(display_prefix);
+#ifdef _WIN32
+      if (display_source && !proc::second_display_available()) {
+        BOOST_LOG(warning) << "Rejecting the second video stream: this host cannot make a display for it"sv;
+        display_source = false;
+      }
+#else
+      display_source = false;
+#endif
+
+      if (!config::video.second_video_stream || !(config.mlFeatureFlags & ML_FF_SESSION_ID_V1) || !(window_source || display_source)) {
+        BOOST_LOG(warning) << "Rejecting the second video stream: it is off, the client has no session ids, or the source ["sv << source << "] is not window:<title> or display:<name>"sv;
+
+        respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return;
+      }
+
+      try {
+        auto monitor2 = config.monitor;
+        monitor2.width = util::from_view(args.at("x-ss-video[1].width"sv));
+        monitor2.height = util::from_view(args.at("x-ss-video[1].height"sv));
+        monitor2.framerate = util::from_view(args.at("x-ss-video[1].fps"sv));
+        monitor2.encodingFramerate = monitor2.framerate * 1000;
+        auto bitrate2 = std::int64_t {util::from_view(args.at("x-ss-video[1].bitrateKbps"sv))};
+        if (config::video.max_bitrate > 0) {
+          bitrate2 = std::min<std::int64_t>(bitrate2, config::video.max_bitrate);
+        }
+        if (config::stream.fec_percentage <= 80) {
+          bitrate2 /= 100.f / (100 - config::stream.fec_percentage);
+        }
+        monitor2.bitrate = bitrate2;
+        if (window_source) {
+          monitor2.capture_window = std::string {source.substr(window_prefix.size())};
+        } else {
+          // The host makes the display when the stream starts and removes it when the stream ends
+          monitor2.capture_display_requested = true;
+        }
+        config.monitor2 = std::move(monitor2);
+      } catch (std::out_of_range &) {
+        respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+        return;
+      }
+
+      BOOST_LOG(info) << "Second video stream: "sv << (config.monitor2->capture_display_requested ? "a display of its own"s : "window ["s + config.monitor2->capture_window + "]"s) << ' ' << config.monitor2->width << 'x' << config.monitor2->height
+                      << " @ "sv << config.monitor2->framerate << " fps, "sv << config.monitor2->bitrate << " kbps"sv;
     }
 
     // Check that any required encryption is enabled

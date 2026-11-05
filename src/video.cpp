@@ -499,10 +499,13 @@ namespace video {
   int start_capture_sync(capture_thread_sync_ctx_t &ctx);
   void end_capture_sync(capture_thread_sync_ctx_t &ctx);
   int start_capture_async(capture_thread_async_ctx_t &ctx);
+  int start_capture_window_async(capture_thread_async_ctx_t &ctx);
   void end_capture_async(capture_thread_async_ctx_t &ctx);
 
   // Keep a reference counter to ensure the capture thread only runs when other threads have a reference to the capture thread
   auto capture_thread_async = safe::make_shared<capture_thread_async_ctx_t>(start_capture_async, end_capture_async);
+  // Streams that capture a window get a capture thread of their own, so they never share (or disturb) the display one.
+  auto capture_thread_window_async = safe::make_shared<capture_thread_async_ctx_t>(start_capture_window_async, end_capture_async);
   auto capture_thread_sync = safe::make_shared<capture_thread_sync_ctx_t>(start_capture_sync, end_capture_sync);
 
 #ifdef _WIN32
@@ -1137,6 +1140,32 @@ namespace video {
     }
   }
 
+  const std::string &capture_window_for(const config_t &config) {
+    return config.capture_window.empty() ? config::video.capture_window : config.capture_window;
+  }
+
+  bool has_private_capture(const config_t &config) {
+    return !capture_window_for(config).empty() || !config.capture_display.empty();
+  }
+
+  /**
+   * @brief Whether a vanished capture window has been missing for longer than capture_window_wait_timeout.
+   * @details Window capture (capture_window) only. Retrying forever would leave the client frozen on its last
+   *          picture, so the caller ends the stream when this returns true.
+   * @param since When the capture started trying to bring the window back.
+   */
+  bool window_capture_gave_up(const config_t &config, std::chrono::steady_clock::time_point since) {
+    if (capture_window_for(config).empty() || config::video.capture_window_wait_timeout <= 0) {
+      return false;
+    }
+    if (std::chrono::steady_clock::now() - since <= std::chrono::seconds(config::video.capture_window_wait_timeout)) {
+      return false;
+    }
+
+    BOOST_LOG(warning) << "Window capture: the window did not come back within "sv << config::video.capture_window_wait_timeout << " s, ending the stream"sv;
+    return true;
+  }
+
   /**
    * @brief Update the list of display names before or during a stream.
    * @details This will attempt to keep `current_display_index` pointing at the same display.
@@ -1204,7 +1233,8 @@ namespace video {
     std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue,
     sync_util::sync_t<std::weak_ptr<platf::display_t>> &display_wp,
     safe::signal_t &reinit_event,
-    const encoder_t &encoder
+    const encoder_t &encoder,
+    bool window_source
   ) {
     std::vector<capture_ctx_t> capture_ctxs;
 
@@ -1220,7 +1250,11 @@ namespace video {
       }
     });
 
-    auto switch_display_event = mail::man->event<int>(mail::switch_display);
+    // The window thread has its own display name and switch event, so it cannot read or move the main capture's.
+    std::string window_display_name;
+    std::string &shared_display_name = window_source ? window_display_name : proc::proc.display_name;
+    auto private_mail = std::make_shared<safe::mail_raw_t>();
+    auto switch_display_event = window_source ? private_mail->event<int>(mail::switch_display) : mail::man->event<int>(mail::switch_display);
 
     // Wait for the initial capture context or a request to stop the queue
     auto initial_capture_ctx = capture_ctx_queue->pop();
@@ -1228,6 +1262,13 @@ namespace video {
       return;
     }
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
+
+    // A stream with a display of its own names the display it captures. It must never fall back to another display:
+    // that would show the wrong screen.
+    const bool display_source = window_source && !capture_ctxs.front().config.capture_display.empty();
+    if (display_source) {
+      shared_display_name = capture_ctxs.front().config.capture_display;
+    }
 
     std::vector<std::string> display_names;
     int display_p = -1;
@@ -1237,8 +1278,24 @@ namespace video {
     await_input_desktop_for_capture(platf::input_desktop_wait_context_e::capture, [&]() {
       return !capture_ctx_queue->running() || !capture_ctxs.front().images->running();
     });
-    if (!proc::proc.display_name.empty()) {
-      disp = platf::display(encoder.platform_formats->dev_type, proc::proc.display_name, capture_ctxs.front().config);
+    if (!shared_display_name.empty()) {
+      disp = platf::display(encoder.platform_formats->dev_type, shared_display_name, capture_ctxs.front().config);
+    }
+    if (!disp && display_source) {
+      // A new display can take a moment before it can be duplicated
+      for (int attempt = 0; !disp && attempt < 20; ++attempt) {
+        if (!capture_ctx_queue->running() || !capture_ctxs.front().images->running()) {
+          return;
+        }
+
+        std::this_thread::sleep_for(500ms);
+        disp = platf::display(encoder.platform_formats->dev_type, shared_display_name, capture_ctxs.front().config);
+      }
+
+      if (!disp) {
+        BOOST_LOG(error) << "Could not capture the display ["sv << shared_display_name << "] made for the second video stream"sv;
+        return;
+      }
     }
     if (!disp) {
       // Get all the monitor names now, rather than at boot, to
@@ -1246,7 +1303,23 @@ namespace video {
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
       disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
       if (disp) {
-        proc::proc.display_name = display_names[display_p];
+        shared_display_name = display_names[display_p];
+      } else if (window_source) {
+        // A window stream can start while the desktop is changing mode, and then no monitor passes the duplication
+        // test for a moment. That is not the window's fault, so keep trying until the window timeout runs out.
+        const auto retry_started = std::chrono::steady_clock::now();
+        while (!disp) {
+          if (!capture_ctx_queue->running() || !capture_ctxs.front().images->running() ||
+              window_capture_gave_up(capture_ctxs.front().config, retry_started)) {
+            return;
+          }
+
+          std::this_thread::sleep_for(500ms);
+
+          refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+          disp = platf::display(encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
+        }
+        shared_display_name = display_names[display_p];
       } else {
         return;
       }
@@ -1430,13 +1503,32 @@ namespace video {
               std::this_thread::sleep_for(20ms);
             }
 
+            // Window capture (capture_window): the window can be gone for good. Retrying forever would leave the
+            // client frozen on its last picture, so give up after capture_window_wait_timeout seconds. Leaving this
+            // thread stops every session that listens to it (see the fail guard above), which ends the stream.
+            const auto reinit_started = std::chrono::steady_clock::now();
             while (capture_ctx_queue->running()) {
               // Release the display before reenumerating displays, since some capture backends
               // only support a single display session per device/application.
               disp.reset();
 
               // Refresh display names since a display removal might have caused the reinitialization
-              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, proc::proc.display_name);
+              refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, shared_display_name);
+
+              if (display_source) {
+                // Only the display this stream was made for will do. If it is gone for good, the stream ends.
+                auto found = std::find(display_names.begin(), display_names.end(), shared_display_name);
+                if (found == display_names.end()) {
+                  if (std::chrono::steady_clock::now() - reinit_started > 10s) {
+                    BOOST_LOG(warning) << "The display ["sv << shared_display_name << "] of the second video stream is gone, ending the stream"sv;
+                    break;
+                  }
+
+                  std::this_thread::sleep_for(500ms);
+                  continue;
+                }
+                display_p = (int) (found - display_names.begin());
+              }
 
               // Process any pending display switch with the new list of displays
               if (switch_display_event->peek()) {
@@ -1446,7 +1538,11 @@ namespace video {
               // reset_display() will sleep between retries
               reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], capture_ctxs.front().config);
               if (disp) {
-                proc::proc.display_name = display_names[display_p];
+                shared_display_name = display_names[display_p];
+                break;
+              }
+
+              if (window_capture_gave_up(capture_ctxs.front().config, reinit_started)) {
                 break;
               }
             }
@@ -2265,6 +2361,7 @@ namespace video {
       synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*ctx)));
     }
 
+    const auto display_wait_started = std::chrono::steady_clock::now();
     while (encode_session_ctx_queue.running()) {
       // Refresh display names since a display removal might have caused the reinitialization
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
@@ -2277,6 +2374,10 @@ namespace video {
       // reset_display() will sleep between retries
       reset_display(disp, encoder.platform_formats->dev_type, display_names[display_p], synced_session_ctxs.front()->config);
       if (disp) {
+        break;
+      }
+
+      if (window_capture_gave_up(synced_session_ctxs.front()->config, display_wait_started)) {
         break;
       }
     }
@@ -2436,7 +2537,7 @@ namespace video {
       shutdown_event->raise(true);
     });
 
-    auto ref = capture_thread_async.ref();
+    auto ref = (has_private_capture(config) ? capture_thread_window_async : capture_thread_async).ref();
     if (!ref) {
       return;
     }
@@ -2513,6 +2614,12 @@ namespace video {
     void *channel_data
   ) {
     auto idr_events = mail->event<bool>(mail::idr);
+
+    if ((!config.capture_window.empty() || !config.capture_display.empty()) && !(chosen_encoder->flags & PARALLEL_ENCODING)) {
+      // The synchronous capture path serves one display for every session, so it cannot add a window or display stream.
+      BOOST_LOG(error) << "Capturing a window or a display of its own needs a hardware encoder that supports parallel encoding"sv;
+      return;
+    }
 
     idr_events->raise(true);
     if (chosen_encoder->flags & PARALLEL_ENCODING) {
@@ -3055,7 +3162,7 @@ namespace video {
   }
 #endif
 
-  int start_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
+  int start_capture_thread(capture_thread_async_ctx_t &capture_thread_ctx, bool window_source) {
     capture_thread_ctx.encoder_p = chosen_encoder;
     capture_thread_ctx.reinit_event.reset();
 
@@ -3066,10 +3173,19 @@ namespace video {
       capture_thread_ctx.capture_ctx_queue,
       std::ref(capture_thread_ctx.display_wp),
       std::ref(capture_thread_ctx.reinit_event),
-      std::ref(*capture_thread_ctx.encoder_p)
+      std::ref(*capture_thread_ctx.encoder_p),
+      window_source
     };
 
     return 0;
+  }
+
+  int start_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
+    return start_capture_thread(capture_thread_ctx, false);
+  }
+
+  int start_capture_window_async(capture_thread_async_ctx_t &capture_thread_ctx) {
+    return start_capture_thread(capture_thread_ctx, true);
   }
 
   void end_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {

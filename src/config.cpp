@@ -494,6 +494,10 @@ namespace config {
     },  // vaapi
 
     {},  // capture
+    {},  // capture_window
+    10,  // capture_window_wait_timeout (seconds, 0 = wait forever)
+    true,  // capture_window_raise
+    false,  // second_video_stream
     {},  // encoder
     {},  // adapter_name
     {},  // output_name
@@ -1201,6 +1205,10 @@ namespace config {
     bool_f(vars, "vaapi_strict_rc_buffer", video.vaapi.strict_rc_buffer);
 
     string_f(vars, "capture", video.capture);
+    string_f(vars, "capture_window", video.capture_window);
+    int_f(vars, "capture_window_wait_timeout", video.capture_window_wait_timeout);
+    bool_f(vars, "capture_window_raise", video.capture_window_raise);
+    bool_f(vars, "second_video_stream", video.second_video_stream);
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "output_name", video.output_name);

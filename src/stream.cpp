@@ -34,6 +34,11 @@ extern "C" {
 #include "system_tray.h"
 #include "thread_safe.h"
 #include "utility.h"
+#include "uuid.h"
+
+#ifdef _WIN32
+  #include "platform/windows/misc.h"
+#endif
 
 #define IDX_START_A 0
 #define IDX_START_B 1
@@ -53,6 +58,10 @@ extern "C" {
 #define IDX_SET_CLIPBOARD 16
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 17
 #define IDX_SET_ADAPTIVE_TRIGGERS 18
+#define IDX_REQUEST_IDR_FRAME_STREAM 19
+#define IDX_INVALIDATE_REF_FRAMES_STREAM 20
+#define IDX_STREAM_ENDED 21
+#define IDX_STOP_VIDEO_STREAM 22
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -74,6 +83,10 @@ static const short packetTypes[] = {
   0x3001,  // Set Clipboard (Apollo protocol extension)
   0x3002,  // File transfer nonce request (Apollo protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
+  0x3100,  // IDR frame request for one video stream (ApolloVibe protocol extension)
+  0x3101,  // Reference frame invalidation for one video stream (ApolloVibe protocol extension)
+  0x3102,  // A video stream has ended (ApolloVibe protocol extension, host to client)
+  0x3103,  // Stop one video stream (ApolloVibe protocol extension, client to host)
 };
 
 namespace asio = boost::asio;
@@ -209,6 +222,14 @@ namespace stream {
     std::uint8_t type_right;
     std::uint8_t left[DS_EFFECT_PAYLOAD_SIZE];
     std::uint8_t right[DS_EFFECT_PAYLOAD_SIZE];
+  };
+
+  // Host to client: one video stream has ended while the session carries on (ApolloVibe protocol extension).
+  struct control_stream_ended_t {
+    control_header_v2 header;
+
+    std::uint32_t streamIndex;
+    std::uint32_t reason;  // 0 = the stream ended (its source went away, or the client never pinged it)
   };
 
   struct control_hdr_mode_t {
@@ -357,6 +378,35 @@ namespace stream {
     control_server_t control_server;
   };
 
+  struct session_t;
+
+  /**
+   * @brief Everything one video stream needs on its own: where it sends, how it numbers and encrypts packets,
+   *        and the events that ask it for a new keyframe. A session owns one of these today.
+   * @details Encoded packets carry a pointer to their stream, not their session, so the send thread can serve
+   *          more than one stream without a second code path.
+   */
+  struct video_stream_t {
+    session_t *session {nullptr};
+
+    std::string ping_payload;
+
+    int lowseq;
+    udp::endpoint peer;
+
+    std::optional<crypto::cipher::gcm_t> cipher;
+    std::uint64_t gcm_iv_counter;
+
+    safe::mail_raw_t::event_t<bool> idr_events;
+    safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
+
+    std::unique_ptr<platf::deinit_t> qos;
+
+    // Last byte of the AES-GCM IV. Two streams share the client's key, so each needs its own value or the
+    // same (key, IV) pair would be used twice.
+    char iv_tag {'V'};
+  };
+
   struct session_t {
     config_t config;
 
@@ -366,6 +416,7 @@ namespace stream {
 
     std::thread audioThread;
     std::thread videoThread;
+    std::thread videoThread2;  // Only runs when the client asked for a second video stream.
 
     std::chrono::steady_clock::time_point pingTimeout;
 
@@ -373,20 +424,22 @@ namespace stream {
 
     boost::asio::ip::address localAddress;
 
-    struct {
-      std::string ping_payload;
+    video_stream_t video;
 
-      int lowseq;
-      udp::endpoint peer;
+    // The second video stream. It has its own mail so its keyframe, touch-port and shutdown events do not mix with the
+    // first stream's, and a shutdown event of its own so it can end without ending the session.
+    video_stream_t video2;
+    safe::mail_t mail2;
+    safe::mail_raw_t::event_t<bool> video2_shutdown_event;
 
-      std::optional<crypto::cipher::gcm_t> cipher;
-      std::uint64_t gcm_iv_counter;
+    // Set when the client asked for the second stream to stop, so the stop is not reported back to it as an error.
+    std::atomic_bool video2_stopped_by_client {false};
 
-      safe::mail_raw_t::event_t<bool> idr_events;
-      safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
-
-      std::unique_ptr<platf::deinit_t> qos;
-    } video;
+#ifdef _WIN32
+    // The virtual display made for a second stream that is a display of its own. Made before the first stream starts
+    // capturing, so the desktop settles before capture begins, and removed when the second stream ends.
+    std::optional<GUID> second_display_guid;
+#endif
 
     struct {
       crypto::cipher::cbc_t cipher;
@@ -939,6 +992,35 @@ namespace stream {
     return 0;
   }
 
+  /**
+   * @brief Tell the client that one of its video streams ended while the session carries on.
+   * @details Window capture only sends frames when the picture changes, so the client cannot tell a silent
+   *          stream from an ended one. This message is how it learns.
+   */
+  int send_stream_ended(session_t *session, std::uint32_t stream_index, std::uint32_t reason) {
+    if (!session->control.peer) {
+      return -1;
+    }
+
+    control_stream_ended_t plaintext {};
+    plaintext.header.type = packetTypes[IDX_STREAM_ENDED];
+    plaintext.header.payloadLength = sizeof(control_stream_ended_t) - sizeof(control_header_v2);
+    plaintext.streamIndex = util::endian::little(stream_index);
+    plaintext.reason = util::endian::little(reason);
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+
+    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+      BOOST_LOG(warning) << "Couldn't tell the client that video stream ["sv << stream_index << "] ended"sv;
+      return -1;
+    }
+
+    BOOST_LOG(debug) << "Sent stream ended: "sv << stream_index;
+    return 0;
+  }
+
   void controlBroadcastThread(control_server_t *server) {
     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
@@ -985,6 +1067,58 @@ namespace stream {
         << "lastFrame [" << lastFrame << ']';
 
       session->video.invalidate_ref_frames_events->raise(std::make_pair(firstFrame, lastFrame));
+    });
+
+    // Requests for the second video stream (ApolloVibe protocol extension). They carry the stream index so the
+    // first stream's requests keep their old meaning.
+    server->map(packetTypes[IDX_REQUEST_IDR_FRAME_STREAM], [&](session_t *session, const std::string_view &payload) {
+      std::uint32_t stream_index;
+      if (payload.size() < sizeof(stream_index)) {
+        return;
+      }
+      std::memcpy(&stream_index, payload.data(), sizeof(stream_index));
+      stream_index = util::endian::little(stream_index);
+
+      BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME_STREAM] stream ["sv << stream_index << ']';
+
+      if (stream_index == 1 && session->video2.idr_events) {
+        session->video2.idr_events->raise(true);
+      }
+    });
+
+    server->map(packetTypes[IDX_INVALIDATE_REF_FRAMES_STREAM], [&](session_t *session, const std::string_view &payload) {
+      std::uint32_t request[3];  // stream index, first frame, last frame
+      if (payload.size() < sizeof(request)) {
+        return;
+      }
+      std::memcpy(request, payload.data(), sizeof(request));
+      auto stream_index = util::endian::little(request[0]);
+      std::int64_t first_frame = util::endian::little(request[1]);
+      std::int64_t last_frame = util::endian::little(request[2]);
+
+      BOOST_LOG(debug)
+        << "type [IDX_INVALIDATE_REF_FRAMES_STREAM] stream ["sv << stream_index << "] frames ["sv << first_frame << ", "sv << last_frame << ']';
+
+      if (stream_index == 1 && session->video2.invalidate_ref_frames_events) {
+        session->video2.invalidate_ref_frames_events->raise(std::make_pair(first_frame, last_frame));
+      }
+    });
+
+    // The client closed the window of the second stream: stop encoding it. The session and the first stream go on.
+    server->map(packetTypes[IDX_STOP_VIDEO_STREAM], [&](session_t *session, const std::string_view &payload) {
+      std::uint32_t stream_index;
+      if (payload.size() < sizeof(stream_index)) {
+        return;
+      }
+      std::memcpy(&stream_index, payload.data(), sizeof(stream_index));
+      stream_index = util::endian::little(stream_index);
+
+      BOOST_LOG(info) << "The client closed the second video stream"sv;
+
+      if (stream_index == 1 && session->video2_shutdown_event) {
+        session->video2_stopped_by_client = true;
+        session->video2_shutdown_event->raise(true);
+      }
     });
 
     server->map(packetTypes[IDX_INPUT_DATA], [&](session_t *session, const std::string_view &payload) {
@@ -1237,6 +1371,9 @@ namespace stream {
       }
 
       session->shutdown_event->raise(true);
+      if (session->video2_shutdown_event) {
+        session->video2_shutdown_event->raise(true);
+      }
       session->controlEnd.raise(true);
     }
 
@@ -1461,8 +1598,9 @@ namespace stream {
 
       frame_network_latency_logger.first_point_now();
 
-      auto session = (session_t *) packet->channel_data;
-      auto lowseq = session->video.lowseq;
+      auto stream = (video_stream_t *) packet->channel_data;
+      auto session = stream->session;
+      auto lowseq = stream->lowseq;
 
       std::string_view payload {(char *) packet->data(), packet->data_size()};
       std::vector<uint8_t> payload_with_replacements;
@@ -1610,10 +1748,10 @@ namespace stream {
 
           frame_fec_latency_logger.first_point_now();
           // If video encryption is enabled, we allocate space for the encryption header before each shard
-          auto shards = fec::encode(current_payload, blocksize, fecPercentage, session->config.minRequiredFecPackets, session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+          auto shards = fec::encode(current_payload, blocksize, fecPercentage, session->config.minRequiredFecPackets, stream->cipher ? sizeof(video_packet_enc_prefix_t) : 0);
           frame_fec_latency_logger.second_point_now_and_log();
 
-          auto peer_address = session->video.peer.address();
+          auto peer_address = stream->peer.address();
           auto batch_info = platf::batched_send_info_t {
             shards.headers.begin(),
             shards.prefixsize,
@@ -1623,7 +1761,7 @@ namespace stream {
             0,
             (uintptr_t) sock.native_handle(),
             peer_address,
-            session->video.peer.port(),
+            stream->peer.port(),
             session->localAddress,
           };
 
@@ -1656,7 +1794,7 @@ namespace stream {
             inspect->packet.frameIndex = packet->frame_index();
 
             // Encrypt this shard if video encryption is enabled
-            if (session->video.cipher) {
+            if (stream->cipher) {
               // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
               // Section 8.2.1. The sequence number is our "invocation" field and the 'V' in the
               // high bytes is the "fixed" field. Because each client provides their own unique
@@ -1665,15 +1803,15 @@ namespace stream {
               //
               // The IV counter is 64 bits long which allows for 2^64 encrypted video packets
               // to be sent to each client before the IV repeats.
-              std::copy_n((uint8_t *) &session->video.gcm_iv_counter, sizeof(session->video.gcm_iv_counter), std::begin(iv));
-              iv[11] = 'V';  // Video stream
-              session->video.gcm_iv_counter++;
+              std::copy_n((uint8_t *) &stream->gcm_iv_counter, sizeof(stream->gcm_iv_counter), std::begin(iv));
+              iv[11] = stream->iv_tag;  // Video stream ('V' for the first, 'W' for the second)
+              stream->gcm_iv_counter++;
 
               // Encrypt the target buffer in place
               auto *prefix = (video_packet_enc_prefix_t *) shards.prefix(x);
               prefix->frameNumber = packet->frame_index();
               std::copy(std::begin(iv), std::end(iv), prefix->iv);
-              session->video.cipher->encrypt(std::string_view {(char *) inspect, (size_t) blocksize}, prefix->tag, (uint8_t *) inspect, &iv);
+              stream->cipher->encrypt(std::string_view {(char *) inspect, (size_t) blocksize}, prefix->tag, (uint8_t *) inspect, &iv);
             }
 
             if (x - next_shard_to_send + 1 >= send_batch_size ||
@@ -1712,7 +1850,7 @@ namespace stream {
                     shards.blocksize,
                     (uintptr_t) sock.native_handle(),
                     peer_address,
-                    session->video.peer.port(),
+                    stream->peer.port(),
                     session->localAddress,
                   };
 
@@ -1744,7 +1882,7 @@ namespace stream {
           lowseq += shards.size();
         });
 
-        session->video.lowseq = lowseq;
+        stream->lowseq = lowseq;
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);
@@ -2048,7 +2186,108 @@ namespace stream {
     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
-    video::capture(session->mail, session->config.monitor, session);
+    video::capture(session->mail, session->config.monitor, &session->video);
+  }
+
+  /**
+   * @brief Run the second video stream, when the client asked for one.
+   * @details The first stream's thread ends the whole session when it stops. This one only ends its own stream:
+   *          the session, the first stream and the audio keep running.
+   */
+#ifdef _WIN32
+  /**
+   * @brief Make the virtual display of a second stream that is a display of its own.
+   * @details Runs before the session's threads start. Adding a display changes the desktop, and a capture that is already
+   *          running restarts when that happens, which stalls the first stream for a moment. Made first, the change
+   *          is over before any capture begins. On failure the second stream ends itself and the first carries on.
+   */
+  void make_second_display(session_t &session) {
+    auto &monitor2 = *session.config.monitor2;
+    if (!monitor2.capture_display_requested) {
+      return;
+    }
+
+    if (!proc::second_display_available()) {
+      BOOST_LOG(error) << "The second video stream needs a virtual display, but this host cannot make one"sv;
+      return;
+    }
+
+    auto uuid = uuid_util::uuid_t::generate();
+    GUID guid;
+    memcpy(&guid, &uuid, sizeof(GUID));
+
+    // The driver takes short names: the monitor name and a serial number of at most 13 characters
+    auto serial = uuid.string();
+    serial.erase(std::remove(serial.begin(), serial.end(), '-'), serial.end());
+    serial = "S" + serial.substr(0, 12);
+
+    session.second_display_guid = guid;
+    auto name = VDISPLAY::createVirtualDisplay(serial.c_str(), "SecondScreen", monitor2.width, monitor2.height, monitor2.encodingFramerate, guid);
+    if (name.empty()) {
+      BOOST_LOG(error) << "The virtual display of the second video stream could not be made"sv;
+      return;
+    }
+
+    VDISPLAY::changeDisplaySettings(name.c_str(), monitor2.width, monitor2.height, monitor2.encodingFramerate);
+
+    monitor2.capture_display = platf::to_utf8(name);
+    BOOST_LOG(info) << "The second video stream captures the virtual display "sv << monitor2.capture_display;
+  }
+
+  /**
+   * @brief Remove the virtual display of the second stream, if one was made. Safe to call again.
+   */
+  void remove_second_display(session_t &session) {
+    if (!session.second_display_guid) {
+      return;
+    }
+
+    auto guid = *session.second_display_guid;
+    session.second_display_guid.reset();
+
+    if (VDISPLAY::removeVirtualDisplay(guid)) {
+      BOOST_LOG(info) << "Removed the virtual display of the second video stream"sv;
+    } else {
+      BOOST_LOG(warning) << "Could not remove the virtual display of the second video stream"sv;
+    }
+  }
+#endif
+
+  void videoThread2(session_t *session) {
+    auto fg = util::fail_guard([&]() {
+      session->video2_shutdown_event->raise(true);
+
+      // Tell the client, unless the whole session is going away anyway or the client asked for the stop itself.
+      if (!session->video2_stopped_by_client.load() && session->state.load(std::memory_order_relaxed) == stream::session::state_e::RUNNING) {
+        send_stream_ended(session, 1, 0);
+      }
+    });
+
+    while_starting_do_nothing(session->state);
+
+    auto ref = broadcast.ref();
+    // Same UDP port as the first stream; the ping payload tells the two apart.
+    auto ping_error = recv_ping(session, ref, socket_e::video, session->video2.ping_payload, session->video2.peer, config::stream.ping_timeout);
+    if (ping_error < 0) {
+      return;
+    }
+
+    auto address = session->video2.peer.address();
+    session->video2.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video2.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+
+#ifdef _WIN32
+    // A stream with a display of its own needs the display session start made. If that failed, end this stream.
+    auto display_fg = util::fail_guard([&]() {
+      remove_second_display(*session);
+    });
+
+    if (session->config.monitor2->capture_display_requested && session->config.monitor2->capture_display.empty()) {
+      return;
+    }
+#endif
+
+    BOOST_LOG(debug) << "Start capturing the second video stream"sv;
+    video::capture(session->mail2, *session->config.monitor2, &session->video2);
   }
 
   void audioThread(session_t *session) {
@@ -2119,6 +2358,9 @@ namespace stream {
       }
 
       session.shutdown_event->raise(true);
+      if (session.video2_shutdown_event) {
+        session.video2_shutdown_event->raise(true);
+      }
     }
 
     void graceful_stop(session_t& session) {
@@ -2151,6 +2393,9 @@ namespace stream {
       }
 
       session.shutdown_event->raise(true);
+      if (session.video2_shutdown_event) {
+        session.video2_shutdown_event->raise(true);
+      }
       session.controlEnd.raise(true);
     }
 
@@ -2171,6 +2416,14 @@ namespace stream {
 
       BOOST_LOG(debug) << "Waiting for video to end..."sv;
       session.videoThread.join();
+      if (session.videoThread2.joinable()) {
+        BOOST_LOG(debug) << "Waiting for the second video to end..."sv;
+        session.videoThread2.join();
+      }
+#ifdef _WIN32
+      // Also covers a session that ended before its second stream thread ever ran
+      remove_second_display(session);
+#endif
       BOOST_LOG(debug) << "Waiting for audio to end..."sv;
       session.audioThread.join();
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
@@ -2225,6 +2478,9 @@ namespace stream {
 
     int start(session_t &session, const std::string &addr_string) {
       session.input = input::alloc(session.mail);
+      if (session.config.monitor2) {
+        input::attach_second_stream(session.input, session.mail2);
+      }
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {
@@ -2270,8 +2526,17 @@ namespace stream {
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
 
+#ifdef _WIN32
+      if (session.config.monitor2) {
+        make_second_display(session);
+      }
+#endif
+
       session.audioThread = std::thread {audioThread, &session};
       session.videoThread = std::thread {videoThread, &session};
+      if (session.config.monitor2) {
+        session.videoThread2 = std::thread {videoThread2, &session};
+      }
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
@@ -2305,6 +2570,7 @@ namespace stream {
 
     std::shared_ptr<session_t> alloc(config_t &config, rtsp_stream::launch_session_t &launch_session) {
       auto session = std::make_shared<session_t>();
+      session->video.session = session.get();
 
       auto mail = std::make_shared<safe::mail_raw_t>();
 
@@ -2339,6 +2605,24 @@ namespace stream {
           false
         };
         session->video.gcm_iv_counter = 0;
+      }
+
+      if (config.monitor2) {
+        session->mail2 = std::make_shared<safe::mail_raw_t>();
+        session->video2_shutdown_event = session->mail2->event<bool>(mail::shutdown);
+        session->video2.session = session.get();
+        session->video2.idr_events = session->mail2->event<bool>(mail::idr);
+        session->video2.invalidate_ref_frames_events = session->mail2->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
+        session->video2.lowseq = 0;
+        session->video2.ping_payload = launch_session.av_ping_payload2;
+        session->video2.iv_tag = 'W';
+        if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
+          session->video2.cipher = crypto::cipher::gcm_t {
+            launch_session.gcm_key,
+            false
+          };
+          session->video2.gcm_iv_counter = 0;
+        }
       }
 
       constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
