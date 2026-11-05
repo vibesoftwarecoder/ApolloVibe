@@ -1144,6 +1144,10 @@ namespace video {
     return config.capture_window.empty() ? config::video.capture_window : config.capture_window;
   }
 
+  bool has_private_capture(const config_t &config) {
+    return !capture_window_for(config).empty() || !config.capture_display.empty();
+  }
+
   /**
    * @brief Whether a vanished capture window has been missing for longer than capture_window_wait_timeout.
    * @details Window capture (capture_window) only. Retrying forever would leave the client frozen on its last
@@ -1259,6 +1263,13 @@ namespace video {
     }
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
 
+    // A stream with a display of its own names the display it captures. It must never fall back to another display:
+    // that would show the wrong screen.
+    const bool display_source = window_source && !capture_ctxs.front().config.capture_display.empty();
+    if (display_source) {
+      shared_display_name = capture_ctxs.front().config.capture_display;
+    }
+
     std::vector<std::string> display_names;
     int display_p = -1;
     std::shared_ptr<platf::display_t> disp;
@@ -1269,6 +1280,22 @@ namespace video {
     });
     if (!shared_display_name.empty()) {
       disp = platf::display(encoder.platform_formats->dev_type, shared_display_name, capture_ctxs.front().config);
+    }
+    if (!disp && display_source) {
+      // A new display can take a moment before it can be duplicated
+      for (int attempt = 0; !disp && attempt < 20; ++attempt) {
+        if (!capture_ctx_queue->running() || !capture_ctxs.front().images->running()) {
+          return;
+        }
+
+        std::this_thread::sleep_for(500ms);
+        disp = platf::display(encoder.platform_formats->dev_type, shared_display_name, capture_ctxs.front().config);
+      }
+
+      if (!disp) {
+        BOOST_LOG(error) << "Could not capture the display ["sv << shared_display_name << "] made for the second video stream"sv;
+        return;
+      }
     }
     if (!disp) {
       // Get all the monitor names now, rather than at boot, to
@@ -1487,6 +1514,21 @@ namespace video {
 
               // Refresh display names since a display removal might have caused the reinitialization
               refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, shared_display_name);
+
+              if (display_source) {
+                // Only the display this stream was made for will do. If it is gone for good, the stream ends.
+                auto found = std::find(display_names.begin(), display_names.end(), shared_display_name);
+                if (found == display_names.end()) {
+                  if (std::chrono::steady_clock::now() - reinit_started > 10s) {
+                    BOOST_LOG(warning) << "The display ["sv << shared_display_name << "] of the second video stream is gone, ending the stream"sv;
+                    break;
+                  }
+
+                  std::this_thread::sleep_for(500ms);
+                  continue;
+                }
+                display_p = (int) (found - display_names.begin());
+              }
 
               // Process any pending display switch with the new list of displays
               if (switch_display_event->peek()) {
@@ -2495,7 +2537,7 @@ namespace video {
       shutdown_event->raise(true);
     });
 
-    auto ref = (capture_window_for(config).empty() ? capture_thread_async : capture_thread_window_async).ref();
+    auto ref = (has_private_capture(config) ? capture_thread_window_async : capture_thread_async).ref();
     if (!ref) {
       return;
     }
@@ -2573,9 +2615,9 @@ namespace video {
   ) {
     auto idr_events = mail->event<bool>(mail::idr);
 
-    if (!config.capture_window.empty() && !(chosen_encoder->flags & PARALLEL_ENCODING)) {
-      // The synchronous capture path serves one display for every session, so it cannot add a window stream.
-      BOOST_LOG(error) << "Capturing a window for a stream needs a hardware encoder that supports parallel encoding"sv;
+    if ((!config.capture_window.empty() || !config.capture_display.empty()) && !(chosen_encoder->flags & PARALLEL_ENCODING)) {
+      // The synchronous capture path serves one display for every session, so it cannot add a window or display stream.
+      BOOST_LOG(error) << "Capturing a window or a display of its own needs a hardware encoder that supports parallel encoding"sv;
       return;
     }
 

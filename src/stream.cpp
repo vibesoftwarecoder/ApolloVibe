@@ -34,6 +34,11 @@ extern "C" {
 #include "system_tray.h"
 #include "thread_safe.h"
 #include "utility.h"
+#include "uuid.h"
+
+#ifdef _WIN32
+  #include "platform/windows/misc.h"
+#endif
 
 #define IDX_START_A 0
 #define IDX_START_B 1
@@ -2197,13 +2202,58 @@ namespace stream {
 
     auto ref = broadcast.ref();
     // Same UDP port as the first stream; the ping payload tells the two apart.
-    auto error = recv_ping(session, ref, socket_e::video, session->video2.ping_payload, session->video2.peer, config::stream.ping_timeout);
-    if (error < 0) {
+    auto ping_error = recv_ping(session, ref, socket_e::video, session->video2.ping_payload, session->video2.peer, config::stream.ping_timeout);
+    if (ping_error < 0) {
       return;
     }
 
     auto address = session->video2.peer.address();
     session->video2.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video2.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+
+#ifdef _WIN32
+    // A stream with a display of its own: make the display now and remove it when this stream ends. Windows left
+    // on it go back to the other display. A host that cannot make one ends the stream, which closes the client's window.
+    std::optional<GUID> second_display_guid;
+    auto display_fg = util::fail_guard([&]() {
+      if (second_display_guid) {
+        if (VDISPLAY::removeVirtualDisplay(*second_display_guid)) {
+          BOOST_LOG(info) << "Removed the virtual display of the second video stream"sv;
+        } else {
+          BOOST_LOG(warning) << "Could not remove the virtual display of the second video stream"sv;
+        }
+      }
+    });
+
+    if (session->config.monitor2->capture_display_requested) {
+      auto &monitor2 = *session->config.monitor2;
+
+      if (!proc::second_display_available()) {
+        BOOST_LOG(error) << "The second video stream needs a virtual display, but this host cannot make one"sv;
+        return;
+      }
+
+      auto uuid = uuid_util::uuid_t::generate();
+      GUID guid;
+      memcpy(&guid, &uuid, sizeof(GUID));
+
+      // The driver takes short names: the monitor name and a serial number of at most 13 characters
+      auto serial = uuid.string();
+      serial.erase(std::remove(serial.begin(), serial.end(), '-'), serial.end());
+      serial = "S" + serial.substr(0, 12);
+
+      second_display_guid = guid;
+      auto name = VDISPLAY::createVirtualDisplay(serial.c_str(), "SecondScreen", monitor2.width, monitor2.height, monitor2.encodingFramerate, guid);
+      if (name.empty()) {
+        BOOST_LOG(error) << "The virtual display of the second video stream could not be made"sv;
+        return;
+      }
+
+      VDISPLAY::changeDisplaySettings(name.c_str(), monitor2.width, monitor2.height, monitor2.encodingFramerate);
+
+      monitor2.capture_display = platf::to_utf8(name);
+      BOOST_LOG(info) << "The second video stream captures the virtual display "sv << monitor2.capture_display;
+    }
+#endif
 
     BOOST_LOG(debug) << "Start capturing the second video stream"sv;
     video::capture(session->mail2, *session->config.monitor2, &session->video2);
