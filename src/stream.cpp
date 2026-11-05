@@ -435,6 +435,12 @@ namespace stream {
     // Set when the client asked for the second stream to stop, so the stop is not reported back to it as an error.
     std::atomic_bool video2_stopped_by_client {false};
 
+#ifdef _WIN32
+    // The virtual display made for a second stream that is a display of its own. Made before the first stream starts
+    // capturing, so the desktop settles before capture begins, and removed when the second stream ends.
+    std::optional<GUID> second_display_guid;
+#endif
+
     struct {
       crypto::cipher::cbc_t cipher;
       std::string ping_payload;
@@ -2188,6 +2194,65 @@ namespace stream {
    * @details The first stream's thread ends the whole session when it stops. This one only ends its own stream:
    *          the session, the first stream and the audio keep running.
    */
+#ifdef _WIN32
+  /**
+   * @brief Make the virtual display of a second stream that is a display of its own.
+   * @details Runs before the session's threads start. Adding a display changes the desktop, and a capture that is already
+   *          running restarts when that happens, which stalls the first stream for a moment. Made first, the change
+   *          is over before any capture begins. On failure the second stream ends itself and the first carries on.
+   */
+  void make_second_display(session_t &session) {
+    auto &monitor2 = *session.config.monitor2;
+    if (!monitor2.capture_display_requested) {
+      return;
+    }
+
+    if (!proc::second_display_available()) {
+      BOOST_LOG(error) << "The second video stream needs a virtual display, but this host cannot make one"sv;
+      return;
+    }
+
+    auto uuid = uuid_util::uuid_t::generate();
+    GUID guid;
+    memcpy(&guid, &uuid, sizeof(GUID));
+
+    // The driver takes short names: the monitor name and a serial number of at most 13 characters
+    auto serial = uuid.string();
+    serial.erase(std::remove(serial.begin(), serial.end(), '-'), serial.end());
+    serial = "S" + serial.substr(0, 12);
+
+    session.second_display_guid = guid;
+    auto name = VDISPLAY::createVirtualDisplay(serial.c_str(), "SecondScreen", monitor2.width, monitor2.height, monitor2.encodingFramerate, guid);
+    if (name.empty()) {
+      BOOST_LOG(error) << "The virtual display of the second video stream could not be made"sv;
+      return;
+    }
+
+    VDISPLAY::changeDisplaySettings(name.c_str(), monitor2.width, monitor2.height, monitor2.encodingFramerate);
+
+    monitor2.capture_display = platf::to_utf8(name);
+    BOOST_LOG(info) << "The second video stream captures the virtual display "sv << monitor2.capture_display;
+  }
+
+  /**
+   * @brief Remove the virtual display of the second stream, if one was made. Safe to call again.
+   */
+  void remove_second_display(session_t &session) {
+    if (!session.second_display_guid) {
+      return;
+    }
+
+    auto guid = *session.second_display_guid;
+    session.second_display_guid.reset();
+
+    if (VDISPLAY::removeVirtualDisplay(guid)) {
+      BOOST_LOG(info) << "Removed the virtual display of the second video stream"sv;
+    } else {
+      BOOST_LOG(warning) << "Could not remove the virtual display of the second video stream"sv;
+    }
+  }
+#endif
+
   void videoThread2(session_t *session) {
     auto fg = util::fail_guard([&]() {
       session->video2_shutdown_event->raise(true);
@@ -2211,47 +2276,13 @@ namespace stream {
     session->video2.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video2.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
 #ifdef _WIN32
-    // A stream with a display of its own: make the display now and remove it when this stream ends. Windows left
-    // on it go back to the other display. A host that cannot make one ends the stream, which closes the client's window.
-    std::optional<GUID> second_display_guid;
+    // A stream with a display of its own needs the display session start made. If that failed, end this stream.
     auto display_fg = util::fail_guard([&]() {
-      if (second_display_guid) {
-        if (VDISPLAY::removeVirtualDisplay(*second_display_guid)) {
-          BOOST_LOG(info) << "Removed the virtual display of the second video stream"sv;
-        } else {
-          BOOST_LOG(warning) << "Could not remove the virtual display of the second video stream"sv;
-        }
-      }
+      remove_second_display(*session);
     });
 
-    if (session->config.monitor2->capture_display_requested) {
-      auto &monitor2 = *session->config.monitor2;
-
-      if (!proc::second_display_available()) {
-        BOOST_LOG(error) << "The second video stream needs a virtual display, but this host cannot make one"sv;
-        return;
-      }
-
-      auto uuid = uuid_util::uuid_t::generate();
-      GUID guid;
-      memcpy(&guid, &uuid, sizeof(GUID));
-
-      // The driver takes short names: the monitor name and a serial number of at most 13 characters
-      auto serial = uuid.string();
-      serial.erase(std::remove(serial.begin(), serial.end(), '-'), serial.end());
-      serial = "S" + serial.substr(0, 12);
-
-      second_display_guid = guid;
-      auto name = VDISPLAY::createVirtualDisplay(serial.c_str(), "SecondScreen", monitor2.width, monitor2.height, monitor2.encodingFramerate, guid);
-      if (name.empty()) {
-        BOOST_LOG(error) << "The virtual display of the second video stream could not be made"sv;
-        return;
-      }
-
-      VDISPLAY::changeDisplaySettings(name.c_str(), monitor2.width, monitor2.height, monitor2.encodingFramerate);
-
-      monitor2.capture_display = platf::to_utf8(name);
-      BOOST_LOG(info) << "The second video stream captures the virtual display "sv << monitor2.capture_display;
+    if (session->config.monitor2->capture_display_requested && session->config.monitor2->capture_display.empty()) {
+      return;
     }
 #endif
 
@@ -2389,6 +2420,10 @@ namespace stream {
         BOOST_LOG(debug) << "Waiting for the second video to end..."sv;
         session.videoThread2.join();
       }
+#ifdef _WIN32
+      // Also covers a session that ended before its second stream thread ever ran
+      remove_second_display(session);
+#endif
       BOOST_LOG(debug) << "Waiting for audio to end..."sv;
       session.audioThread.join();
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
@@ -2490,6 +2525,12 @@ namespace stream {
       }
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
+
+#ifdef _WIN32
+      if (session.config.monitor2) {
+        make_second_display(session);
+      }
+#endif
 
       session.audioThread = std::thread {audioThread, &session};
       session.videoThread = std::thread {videoThread, &session};
